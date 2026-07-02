@@ -40,7 +40,7 @@ class SupabaseMemory(AlphaMemory):
         return model
 
     def add_hypothesis(self, h: Hypothesis) -> Hypothesis:
-        return self._insert("hypotheses", h)
+        return self._insert("hypotheses", self._enrich(h))
 
     def add_spec(self, s: StrategySpec) -> StrategySpec:
         return self._insert("specs", s)
@@ -56,6 +56,10 @@ class SupabaseMemory(AlphaMemory):
 
     def set_status(self, hypothesis_id: str, status: HypothesisStatus) -> None:
         self.client.table("hypotheses").update({"status": status.value}).eq("id", hypothesis_id).execute()
+
+    def set_behaviour(self, hypothesis_id: str, signature: dict) -> None:
+        self.client.table("hypotheses").update(
+            {"behaviour_signature": signature}).eq("id", hypothesis_id).execute()
 
     def get_hypothesis(self, hypothesis_id: str) -> Hypothesis | None:
         res = self.client.table("hypotheses").select("*").eq("id", hypothesis_id).execute()
@@ -97,6 +101,16 @@ class SupabaseMemory(AlphaMemory):
             counts[t] = self.client.table(t).select("id", count="exact").execute().count or 0
         return {"hypotheses_by_status": by_status, "counts": counts}
 
-    def is_stale(self, h: Hypothesis) -> bool:
-        res = self.client.table("hypotheses").select("id").ilike("claim", h.claim).execute()
-        return bool(res.data)
+    def validated_equity_curves(self) -> list[list[float]]:
+        res = (
+            self.client.table("experiments").select("equity_curve, specs!inner(hypothesis_id, "
+            "hypotheses!inner(status))").execute()
+        )
+        out = []
+        for r in res.data:
+            status = r.get("specs", {}).get("hypotheses", {}).get("status")
+            if status in ("survived", "promoted") and r.get("equity_curve"):
+                out.append(r["equity_curve"])
+        return out
+
+    # novelty / is_stale inherited from AlphaMemory (embedding-distance, spec/04)

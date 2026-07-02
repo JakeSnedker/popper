@@ -18,7 +18,8 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS hypotheses (
     id TEXT PRIMARY KEY, claim TEXT, mechanism TEXT, rationale TEXT,
     required_features TEXT, expected_regime TEXT, novelty_score REAL,
-    status TEXT, parent_id TEXT, created_at TEXT
+    status TEXT, parent_id TEXT, embedding TEXT, tags TEXT,
+    behaviour_signature TEXT, created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS specs (
     id TEXT PRIMARY KEY, hypothesis_id TEXT, dsl_version TEXT, name TEXT,
@@ -31,7 +32,7 @@ CREATE TABLE IF NOT EXISTS experiments (
 CREATE TABLE IF NOT EXISTS scorecards (
     id TEXT PRIMARY KEY, experiment_id TEXT, robustness REAL, parameter_stability REAL,
     regime_stability REAL, capacity REAL, execution_realism REAL, novelty REAL,
-    deflated_sharpe REAL, pbo REAL, created_at TEXT
+    correlation REAL, deflated_sharpe REAL, pbo REAL, behaviour_signature TEXT, created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS verdicts (
     id TEXT PRIMARY KEY, hypothesis_id TEXT, experiment_id TEXT, type TEXT,
@@ -41,7 +42,8 @@ CREATE TABLE IF NOT EXISTS verdicts (
 
 # columns whose values are JSON-encoded lists/dicts
 _JSON_COLS = {
-    "required_features", "alpha", "wrapper", "context",
+    "required_features", "embedding", "tags", "behaviour_signature",
+    "alpha", "wrapper", "context",
     "param_space", "raw_metrics", "equity_curve", "reasons",
 }
 
@@ -64,8 +66,9 @@ def _decode(row: sqlite3.Row) -> dict:
 
 
 class SqliteMemory(AlphaMemory):
-    def __init__(self, path: str):
+    def __init__(self, path: str, embedder=None):
         self.path = path
+        self._embedder = embedder  # None -> lazy get_embedder() via base property
         self._lock = threading.Lock()
         with self._connect() as con:
             con.executescript(_SCHEMA)
@@ -92,7 +95,7 @@ class SqliteMemory(AlphaMemory):
 
     # --- writes ---
     def add_hypothesis(self, h: Hypothesis) -> Hypothesis:
-        return self._insert("hypotheses", h, "H")
+        return self._insert("hypotheses", self._enrich(h), "H")
 
     def add_spec(self, s: StrategySpec) -> StrategySpec:
         return self._insert("specs", s, "S")
@@ -111,6 +114,13 @@ class SqliteMemory(AlphaMemory):
             con.execute(
                 "UPDATE hypotheses SET status = ? WHERE id = ?",
                 (status.value, hypothesis_id),
+            )
+
+    def set_behaviour(self, hypothesis_id: str, signature: dict) -> None:
+        with self._lock, self._connect() as con:
+            con.execute(
+                "UPDATE hypotheses SET behaviour_signature = ? WHERE id = ?",
+                (json.dumps(signature), hypothesis_id),
             )
 
     # --- reads ---
@@ -166,10 +176,15 @@ class SqliteMemory(AlphaMemory):
             }
         return {"hypotheses_by_status": by_status, "counts": counts}
 
-    def is_stale(self, h: Hypothesis) -> bool:
-        # v0: exact claim match. Phase 4 upgrades this to embedding-distance novelty.
+    def validated_equity_curves(self) -> list[list[float]]:
+        # equity curves of SURVIVED/PROMOTED alphas (the correlation pool).
         with self._connect() as con:
-            row = con.execute(
-                "SELECT 1 FROM hypotheses WHERE lower(claim) = lower(?) LIMIT 1", (h.claim,)
-            ).fetchone()
-        return row is not None
+            rows = con.execute(
+                "SELECT e.equity_curve FROM experiments e "
+                "JOIN specs s ON e.spec_id = s.id "
+                "JOIN hypotheses h ON s.hypothesis_id = h.id "
+                "WHERE h.status IN ('survived', 'promoted')"
+            ).fetchall()
+        return [json.loads(r["equity_curve"]) for r in rows if r["equity_curve"]]
+
+    # novelty / is_stale inherited from AlphaMemory (embedding-distance, spec/04)
