@@ -31,7 +31,7 @@ PHASES: list[dict] = [
         "id": 3,
         "name": "Falsification Gauntlet v0",
         "goal": "Automatically kill false alpha: purged CV, Deflated Sharpe, PBO, parameter stability.",
-        "status": "todo",
+        "status": "done",
         "done_when": "An overfit spec is KILLED; a robust one SURVIVES.",
     },
     {
