@@ -24,7 +24,7 @@ PHASES: list[dict] = [
         "id": 2,
         "name": "Data layer + Experiment Runner",
         "goal": "A DSL strategy produces real PnL on real MT5 data (US30/NAS100).",
-        "status": "todo",
+        "status": "done",
         "done_when": "run(spec) returns a populated ExperimentResult on US30.",
     },
     {
