@@ -51,10 +51,22 @@ This mirrors the JJC insight *"trade management cannot create edge, only preserv
   `htf_trend`, `bb_line`, `psar`, `liquidity_sweep`, `candle_size`. Each feature is a pure function
   `bars -> series`, point-in-time correct (no future leak — enforced, see `03`).
 
-## Three compile targets
-- `compile_to_backtest(spec)` → vectorised/event-driven callable over the US30 Parquet bars (the Experiment Runner).
-- `compile_to_sim(spec)` → realistic fills, latency, costs (execution realism — uses ticks later).
-- `compile_to_live(spec)` → MT5 EA params / signal feed (NinjaTrader adapter behind the same interface later).
+## Three compile targets — all Python; **Popper never generates MQL5**
+- `compile_to_backtest(spec)` → a **pure-Python** vectorised/event-driven backtester over the US30 Parquet
+  bars (the Experiment Runner). **No MT5 / Strategy Tester** — deliberate: the loop must run thousands of
+  backtests fast, in parallel, cloud-runnable. Popper computes features, fires the DSL signal, applies the
+  wrapper, and simulates fills on the bars itself.
+- `compile_to_sim(spec)` → realistic fills, latency, costs (execution realism — resamples the `.tkc` ticks later).
+- `compile_to_live(spec)` → DSL signal computed in Python; orders placed via the **MT5 Python bridge**
+  (`order_send`). US30 MFT/systematic is bar-close, so bridge latency is fine. NinjaTrader adapter later.
+
+> **Why no MQL5 (the code-generation concern).** Generating correct MQL5 per alpha would be huge, error-prone,
+> and would bottleneck discovery on the GUI Strategy Tester (one slow run at a time, Windows-bound). So
+> research backtests run in **Python** (any alpha the DSL expresses) and live runs via the **Python bridge** —
+> no per-alpha codegen, ever. A promoted survivor *may optionally* be mapped onto JJC's existing **fixed,
+> parameterised EA** via a `.set` file (params only) where it fits — reuse, not a requirement.
+> **Phase-2 validation (done-when):** confirm the Python backtester reproduces a known JJC MT5 result for the
+> same alpha + wrapper + period within tolerance, so the engine is trusted before the loop relies on it.
 
 ## Proof of expressiveness (done-when)
 Hand-author 3 alphas in the DSL — including one **JJC-style** (e.g. TrendEng entry as the alpha, its Stage-1

@@ -11,9 +11,15 @@ Source code (read before building): `C:\Users\Jakes\Projects\GitHub\quantitative
 ## Gate order (fail fast, cheapest first)
 The JJC "gates between stages — stop if no edge" logic generalizes directly:
 
-0. **Cheap screen (raw edge).** Does the *alpha's* signal predict forward returns on a neutral baseline
-   harness (no wrapper)? Kill vague/weak ideas before spending falsification compute. Only survivors get a
-   wrapper. (JJC: "trade management cannot create edge.")
+0. **Baseline-edge screen.** Test the alpha under a **fixed canonical baseline wrapper** — SL = 2×ATR,
+   TP = 2R (JJC's Stage-1 baseline) — held constant so we isolate the *alpha's* contribution, not the
+   wrapper's. The baseline wrapper is what makes the edge measurable: it bounds each trade so PnL/expectancy
+   is defined and comparable across alphas. "Raw edge" means the wrapper is *fixed at baseline*, **not
+   absent** — an unbounded signal has no tradeable edge to measure. Kill alphas with no edge under the
+   baseline before spending compute; only survivors get **wrapper optimisation** (Stage 2+). *(Optional
+   ultra-cheap pre-filter first: signal ↔ N-bar-forward-return correlation — pure predictive power, no
+   trades.)* JJC: "trade management cannot create edge, only preserve/reduce it" — so a fixed baseline
+   wrapper is the fair test bed for the alpha.
 1. **Leakage checks.** Look-ahead, train/test contamination, survivorship, target leakage. Root fix =
    point-in-time-correct data + **purged & embargoed cross-validation**. *(Jake's known weak spot — own it
    as its own gate. NOT in JJC — add it.)*
