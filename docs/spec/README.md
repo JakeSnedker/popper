@@ -16,7 +16,7 @@ points to source material, and flags open **DECISION**s with a recommended defau
 | 02 | `02-agents.md` | The 5-agent roster, I/O contracts, performance-blind access control, the Director's explore/exploit dial |
 | 03 | `03-falsification.md` | The gauntlet; what to **port** from the JJC validation-framework, what to **add** (López de Prado), what to **drop** (MT5 coupling) |
 | 04 | `04-map-and-categories.md` | Alpha memory as a map: pgvector+HNSW, embeddings, faceted categories, whitespace, portfolio/correlation engine |
-| 05 | `05-gui.md` | *(pending — needs Jake's aesthetic input + a dataviz pass)* whitespace map viz + growing analytics dashboard |
+| 05 | `05-gui.md` | Dark sci-fi HUD: central 3D alpha-map hero + click-to-expand neon analytics tiles (validated palette) |
 | 06 | `06-build-order.md` | Phased build reconciling repo roadmap + full design → GSD phases; infra integration points |
 
 ## Source documents (the spec consolidates these — all now in-repo)
@@ -42,4 +42,4 @@ points to source material, and flags open **DECISION**s with a recommended defau
 2. ✅ Embedding model (`04`) — OpenAI `text-embedding-3-small` (API; Claude has no embeddings endpoint).
 3. ✅ Runtime model split — Fable 5 builds; Opus 4.8 = Director/Synthesis/Workers; Sonnet = Hypothesis/Wildcard/Gatekeeper.
 4. ✅ Autonomy (`06`) — straight-through `/gsd:autonomous` (per-phase auto-verify, no human stop) for overnight runs.
-5. ⏳ GUI aesthetic for `05` (map viz + analytics) — pending, next pass.
+5. ✅ GUI aesthetic (`05`) — dark sci-fi HUD, 3D alpha-map hero, click-to-expand neon tiles (refs in `design-source/gui-refs/`). Palette must pass the dataviz validator at build time.
