@@ -10,8 +10,10 @@ crowded regions, *target* sparse ones, and *go beyond* into whitespace. Source:
   **HNSW** index keeps nearest-neighbour search fast at scale. Qdrant is the upgrade path if outscaled.
 - The shipped memory (`popper/memory/`, SQLite-now / Supabase-ready) extends here: add the vector column +
   behaviour fingerprint + facet tags. Keep the repo factory (`POPPER_STORE`).
-- **DECISION:** embedding model — local (LM Studio, free, private) vs API. Recommended: local for the
-  hypothesis-text embedding; it's high-volume and quality-tolerant.
+- **DECISION (resolved):** embedding model = **OpenAI `text-embedding-3-small`** (API). Chosen to keep
+  compute off the laptop; ~$0.02/1M tokens and Jake already runs OpenAI. Note: **Claude has no embeddings
+  endpoint** (Anthropic points to Voyage AI — a fallback if provider consolidation is wanted later). The
+  hypothesis-text embedding is high-volume and quality-tolerant, so the small model is fine.
 
 ## The three uses of the map (the explore/exploit mechanic)
 - **Avoid** — don't re-run what's crowded / already done (de-dup; the novelty gate).

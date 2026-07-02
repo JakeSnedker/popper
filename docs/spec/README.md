@@ -37,9 +37,9 @@ points to source material, and flags open **DECISION**s with a recommended defau
 - **Build target:** the FULL design. **Build order:** thin-loop-first, then layer agents / explore-exploit / portfolio (see `06`).
 - **Model split:** Fable 5 *builds* it; *runtime* agents run on Opus 4.8 (Director/Synthesis) + Sonnet (high-volume Hypothesis/Wildcard). Fable 5 at runtime would be ruinous in an inner loop.
 
-## Open DECISIONs (need Jake before final push to Fable 5)
-1. DSL grammar style (see `01`) — recommended: YAML-authored, Pydantic-validated, compiled to a typed IR.
-2. Embedding model for the map (see `04`) — local (LM Studio) vs API.
-3. GUI aesthetic for `05` (map viz + analytics).
-4. Confirm runtime model split above.
-5. How far Fable 5 runs autonomously per gate (per-phase review vs to-tangible-loop).
+## DECISIONs
+1. ✅ DSL grammar style (`01`) — YAML-authored, Pydantic-validated, compiled to a typed IR.
+2. ✅ Embedding model (`04`) — OpenAI `text-embedding-3-small` (API; Claude has no embeddings endpoint).
+3. ✅ Runtime model split — Fable 5 builds; Opus 4.8 = Director/Synthesis/Workers; Sonnet = Hypothesis/Wildcard/Gatekeeper.
+4. ✅ Autonomy (`06`) — straight-through `/gsd:autonomous` (per-phase auto-verify, no human stop) for overnight runs.
+5. ⏳ GUI aesthetic for `05` (map viz + analytics) — pending, next pass.

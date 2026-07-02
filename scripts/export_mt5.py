@@ -7,12 +7,15 @@ Setup once:   pip install MetaTrader5 pandas pyarrow
 Run:          python scripts/export_mt5.py
 
 Exports US30.cash M1 + M5 bars (2024-01 -> now) to data/us30/*.parquet.
-These bars are the data layer for the Experiment Runner; commit them so the
-build is reproducible without a live terminal.
+Commit them so the build is reproducible without a live terminal.
 
-# ponytail: bars only. Raw-tick export (for execution-realism / sim fidelity,
+Notes on this MT5 build (5.0.5735):
+- copy_rates_range() returns "Invalid params" (broken) — avoided.
+- copy_rates_from_pos() with a huge count also returns "Invalid params" — so we
+  page it in fixed CHUNK-sized calls, walking backward until we pass START.
 
-#           that phase lands, chunked by month to avoid OOM on ~2yr of index ticks.
+# ponytail: bars only. Raw-tick export (execution-realism / sim fidelity, a later
+#           phase) is added when that phase lands, chunked by month to avoid OOM.
 """
 import sys
 from datetime import datetime, timezone
@@ -22,10 +25,32 @@ import pandas as pd
 import MetaTrader5 as mt5
 
 SYMBOL = "US30.cash"
-START = datetime(2024, 1, 1, tzinfo=timezone.utc)
-END = datetime.now(timezone.utc)
+START = pd.Timestamp(datetime(2024, 1, 1, tzinfo=timezone.utc))
 OUT = Path(__file__).resolve().parents[1] / "data" / "us30"
 TIMEFRAMES = {"M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5}
+CHUNK = 50_000    # bars per copy_rates_from_pos call (this build 400s at >=100k; 50k works)
+MAX_CHUNKS = 120  # safety stop (120 * 50k = 6M bars)
+
+
+def fetch(tf):
+    """Page copy_rates_from_pos backward until the batch reaches START."""
+    frames = []
+    for i in range(MAX_CHUNKS):
+        rates = mt5.copy_rates_from_pos(SYMBOL, tf, i * CHUNK, CHUNK)
+        if rates is None or len(rates) == 0:
+            break
+        df = pd.DataFrame(rates)
+        df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        frames.append(df)
+        if df["time"].iloc[0] <= START or len(rates) < CHUNK:
+            break
+    if not frames:
+        return None
+    out = (pd.concat(frames, ignore_index=True)
+             .drop_duplicates(subset="time")
+             .sort_values("time")
+             .reset_index(drop=True))
+    return out[out["time"] >= START].reset_index(drop=True)
 
 
 def main() -> None:
@@ -38,12 +63,12 @@ def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     wrote = 0
     for name, tf in TIMEFRAMES.items():
-        rates = mt5.copy_rates_range(SYMBOL, tf, START, END)
-        if rates is None or len(rates) == 0:
-            print(f"[warn] no {name} bars: {mt5.last_error()}")
+        df = fetch(tf)
+        if df is None or df.empty:
+            print(f"[warn] {name}: no bars >= {START.date()} ({mt5.last_error()}). "
+                  f"If only recent data returns, set Tools>Options>Charts 'Max bars' to Unlimited "
+                  f"and scroll US30 back to 2024.")
             continue
-        df = pd.DataFrame(rates)
-        df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
         path = OUT / f"US30_{name}.parquet"
         df.to_parquet(path, index=False)
         wrote += 1
@@ -51,7 +76,7 @@ def main() -> None:
 
     mt5.shutdown()
     if wrote == 0:
-        sys.exit("No data written — check the symbol name and that history is loaded in the terminal.")
+        sys.exit("No data written.")
     print(f"\nDone. {wrote} timeframe(s) written to {OUT}")
 
 

@@ -33,9 +33,12 @@ is the shell to extend.
 
 ## Running it under Fable 5 (GSD)
 GSD phase-by-phase maps 1:1 to the table above (atomic commits + verification gate per phase — the check
-that keeps a long Fable 5 run honest). **DECISION:** autonomy per gate — recommended **per-phase review**
-for the first run on a new model, escalate to "autonomous to the tangible loop (Phase 5)" once trust is
-established. Do **not** hand it one monolithic "build everything" command.
+that keeps a long Fable 5 run honest). **DECISION (resolved):** run **straight-through autonomously**
+(`/gsd:autonomous`) so an overnight run doesn't stall waiting on Jake. Crucially, this is *not* a single
+monolithic prompt — GSD autonomous still does discuss→plan→execute **per phase** with an **automated**
+verification gate each phase (the gate checks the phase goal was met; it does not block on a human). So the
+run proceeds unattended but each phase is still verified before the next. Review happens after the run (or
+at the tangible-loop milestone), not as a live stop.
 
 ## Pre-Fable checklist
 - [ ] `data/us30/*.parquet` exported + committed (`scripts/export_mt5.py`)
