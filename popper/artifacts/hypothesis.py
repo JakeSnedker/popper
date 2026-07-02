@@ -25,4 +25,8 @@ class Hypothesis(BaseModel):
     novelty_score: float = 0.0  # 0..1, distance from nearest prior hypothesis
     status: HypothesisStatus = HypothesisStatus.PROPOSED
     parent_id: str | None = None  # lineage: which prior verdict spawned this
+    # --- alpha-map fields (Phase 4), populated by the memory on insert/post-test ---
+    embedding: list[float] = Field(default_factory=list)  # claim+features vector
+    tags: dict = Field(default_factory=dict)  # faceted: edge_type, context
+    behaviour_signature: dict = Field(default_factory=dict)  # post-test behaviour
     created_at: datetime = Field(default_factory=_now)

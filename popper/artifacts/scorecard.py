@@ -23,6 +23,8 @@ class Scorecard(BaseModel):
     capacity: float = 0.0  # PnL retained as size scales
     execution_realism: float = 0.0  # 1 - (backtest vs modeled-fill gap)
     novelty: float = 0.0  # distance in alpha-memory embedding space
+    correlation: float = 0.0  # max |corr| vs the validated pool (LOWER is better)
     deflated_sharpe: float = 0.0  # Sharpe corrected for # trials + non-normality
     pbo: float = 1.0  # probability of backtest overfitting (LOWER is better)
+    behaviour_signature: dict = Field(default_factory=dict)  # post-test behaviour facets
     created_at: datetime = Field(default_factory=_now)
