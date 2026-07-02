@@ -38,7 +38,7 @@ PHASES: list[dict] = [
         "id": 4,
         "name": "Alpha Memory + Scorecard",
         "goal": "Nothing is forgotten; strategies scored as vectors; re-exploration blocked by novelty.",
-        "status": "todo",
+        "status": "done",
         "done_when": "Re-submitting a known idea is flagged stale; every experiment has a scorecard.",
     },
     {
