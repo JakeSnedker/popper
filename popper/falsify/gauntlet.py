@@ -1,0 +1,290 @@
+"""The Falsification Gauntlet v0 (spec/03).
+
+judge(spec) runs the gates fail-fast (cheapest first) over the Phase-2 runner
+and emits a Scorecard + Verdict (SURVIVE | KILL(reasons) | PROMOTE):
+
+  0. leakage       — look-ahead detector (future-perturbation) + purged/embargoed CV
+  1. walk-forward  — anchored OOS windows (JJC calculate_windows, adapted to our dates)
+  2. robustness    — param-neighbourhood stability (PF dispersion, profitable fraction)
+  3. monte carlo   — trade-shuffle P(ruin)
+  4. multiple-test — Deflated Sharpe + PBO via CSCV (the LdP moat)
+
+Gate thresholds are PORTED from the JJC PassFailCriteria. The runner is
+injectable (`run_fn`) so the gauntlet's decision logic is testable with
+controlled data; the default is the real US30 Phase-2 runner.
+"""
+
+from dataclasses import dataclass
+from datetime import datetime
+from itertools import product
+from statistics import mean, pstdev
+
+from popper.artifacts import Scorecard, Verdict, VerdictType
+from popper.data import load_bars
+from popper.dsl import compile_to_backtest
+from popper.experiments import run
+from popper.falsify.stats import (
+    calculate_edge,
+    deflated_sharpe,
+    monte_carlo_ruin,
+    pbo_cscv,
+    purged_kfold,
+)
+
+
+# --- ported PassFailCriteria (walk_forward_config.py) ---
+@dataclass
+class Thresholds:
+    min_forward_pf: float = 1.0
+    ideal_forward_pf: float = 1.3
+    max_drawdown: float = 0.10
+    min_trades_per_window: int = 20
+    min_wfe: float = 0.5
+    min_win_rate: float = 0.25
+    max_mc_ruin: float = 0.15
+    ideal_mc_ruin: float = 0.05
+    min_recovery: float = 1.0
+    ideal_recovery: float = 2.0
+    # parameter stability
+    min_profitable_fraction: float = 0.50   # params win in >50% of the grid
+    max_pf_cv: float = 0.30                  # PF dispersion across the grid <= 30%
+    # ADD (LdP)
+    max_pbo: float = 0.50
+    ideal_pbo: float = 0.20
+    min_deflated_sharpe: float = 0.50
+    ideal_deflated_sharpe: float = 0.70
+
+
+@dataclass
+class GauntletConfig:
+    opt_months: int = 4
+    fwd_months: int = 2
+    step_months: int = 2
+    min_windows: int = 4
+    n_slices: int = 8          # CSCV time-slices for PBO
+    mc_sims: int = 2000
+    max_grid: int = 48         # DECISION: cap combos so the loop stays tractable
+    thresholds: Thresholds = None
+
+    def __post_init__(self):
+        if self.thresholds is None:
+            self.thresholds = Thresholds()
+
+
+def _add_months(dt: datetime, months: int) -> datetime:
+    m = dt.month - 1 + months
+    y = dt.year + m // 12
+    m = m % 12 + 1
+    d = min(dt.day, [31, 29 if y % 4 == 0 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1])
+    return dt.replace(year=y, month=m, day=d)
+
+
+def calculate_windows(start: str, end: str, cfg: GauntletConfig) -> list[dict]:
+    """Anchored walk-forward schedule (ported from WalkForwardSettings)."""
+    s, e = datetime.fromisoformat(start), datetime.fromisoformat(end)
+    windows, cur, i = [], s, 0
+    while True:
+        opt_end = _add_months(cur, cfg.opt_months)
+        fwd_end = _add_months(opt_end, cfg.fwd_months)
+        if fwd_end > e:
+            break
+        windows.append({
+            "opt": (cur.date().isoformat(), opt_end.date().isoformat()),
+            "fwd": (opt_end.date().isoformat(), fwd_end.date().isoformat()),
+        })
+        cur = _add_months(cur, cfg.step_months)
+        i += 1
+    return windows
+
+
+def _grid(spec, cap: int) -> list[dict]:
+    """Cartesian product of param_space, capped (evenly sampled) to `cap`."""
+    if not spec.param_space:
+        return [{}]
+    names = list(spec.param_space)
+    combos = [dict(zip(names, vals)) for vals in product(*(spec.param_space[n] for n in names))]
+    if len(combos) > cap:
+        stride = len(combos) / cap
+        combos = [combos[int(i * stride)] for i in range(cap)]
+    return combos
+
+
+def _pf(exp) -> float:
+    pf = exp.raw_metrics.get("profit_factor", 0.0)
+    return float(pf) if pf not in (float("inf"),) else 5.0  # cap inf PF for math
+
+
+def _trades_r(exp) -> list[float]:
+    return [t["pnl_r"] for t in exp.raw_metrics.get("trades", [])]
+
+
+def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
+          cfg: GauntletConfig | None = None, mem=None) -> tuple[Scorecard, Verdict]:
+    """Run the gauntlet. Returns (Scorecard, Verdict). If `mem`, persists both
+    (the experiment on the full period is stored to anchor experiment_id)."""
+    cfg = cfg or GauntletConfig()
+    t = cfg.thresholds
+    reasons: list[str] = []
+
+    # discover the data period if not supplied
+    if period is None:
+        bars = load_bars(spec.context.universe[0], _mt5_tf(spec.context.timeframe))
+        period = (bars["time"].iloc[0].date().isoformat(), bars["time"].iloc[-1].date().isoformat())
+    start, end = period
+    grid = _grid(spec, cfg.max_grid)
+
+    # anchor experiment: full-period run at default params
+    full = run_fn(spec, period=period, params=None)
+    exp_id = full.id or ""
+
+    def scorecard(robustness, param_stability, dsr, pbo) -> Scorecard:
+        return Scorecard(
+            experiment_id=exp_id,
+            robustness=round(robustness, 3),
+            parameter_stability=round(param_stability, 3),
+            deflated_sharpe=round(dsr, 3),
+            pbo=round(pbo, 3),
+        )
+
+    def verdict(vtype, sc) -> tuple[Scorecard, Verdict]:
+        v = Verdict(hypothesis_id=spec.hypothesis_id, experiment_id=exp_id, type=vtype, reasons=reasons)
+        if mem is not None:
+            if not exp_id:
+                pass
+            sc = mem.add_scorecard(sc)
+            v.experiment_id = sc.experiment_id
+            v = mem.add_verdict(v)
+        return sc, v
+
+    # --- GATE 0: leakage / look-ahead ---
+    if _detect_lookahead(spec, start, end, run_fn):
+        reasons.append("leakage: look-ahead detected (future bars change past trades)")
+        return verdict(VerdictType.KILL, scorecard(0, 0, 0, 1.0))
+
+    # --- GATE 1: walk-forward OOS ---
+    windows = calculate_windows(start, end, cfg)
+    if len(windows) < cfg.min_windows:
+        reasons.append(f"insufficient data: {len(windows)} WF windows < {cfg.min_windows}")
+        return verdict(VerdictType.KILL, scorecard(0, 0, 0, 1.0))
+
+    fwd_trades: list[float] = []
+    fwd_pfs, is_pfs, win_ok = [], [], 0
+    for w in windows:
+        # optimise IS: pick best param by PF on the optimisation slice
+        is_runs = [(c, run_fn(spec, period=w["opt"], params=c)) for c in grid]
+        best_c, best_is = max(is_runs, key=lambda cr: _pf(cr[1]))
+        oos = run_fn(spec, period=w["fwd"], params=best_c)
+        is_pfs.append(_pf(best_is))
+        fwd_pfs.append(_pf(oos))
+        fwd_trades += _trades_r(oos)
+        if oos.trades_n >= 1 and _pf(oos) > 1.0:
+            win_ok += 1
+
+    combined_fwd_pf = _pf_from_r(fwd_trades)
+    wfe = (mean(fwd_pfs) / mean(is_pfs)) if is_pfs and mean(is_pfs) > 0 else 0.0
+    window_consistency = win_ok / len(windows)
+    avg_fwd_trades = len(fwd_trades) / len(windows)
+
+    if avg_fwd_trades < t.min_trades_per_window:
+        reasons.append(f"forward trades/window {avg_fwd_trades:.0f} < {t.min_trades_per_window}")
+    if combined_fwd_pf < t.min_forward_pf:
+        reasons.append(f"forward PF {combined_fwd_pf:.3f} < {t.min_forward_pf}")
+    if wfe < t.min_wfe:
+        reasons.append(f"walk-forward efficiency {wfe:.2f} < {t.min_wfe}")
+
+    # --- GATE 2: parameter-neighbourhood robustness (over full period) ---
+    grid_pfs = [_pf(run_fn(spec, period=period, params=c)) for c in grid]
+    profitable_frac = mean(1.0 if p > 1.0 else 0.0 for p in grid_pfs)
+    pf_cv = (pstdev(grid_pfs) / mean(grid_pfs)) if len(grid_pfs) > 1 and mean(grid_pfs) > 0 else 1.0
+    param_stability = max(0.0, min(profitable_frac, 1.0 - min(pf_cv, 1.0)))
+    if profitable_frac < t.min_profitable_fraction:
+        reasons.append(f"only {profitable_frac:.0%} of param grid profitable < {t.min_profitable_fraction:.0%}")
+    if pf_cv > t.max_pf_cv and len(grid) > 1:
+        reasons.append(f"PF dispersion across grid {pf_cv:.0%} > {t.max_pf_cv:.0%} (knife-edge)")
+
+    # --- GATE 3: Monte Carlo ruin (on the forward OOS trades) ---
+    mc = monte_carlo_ruin(fwd_trades, n_sims=cfg.mc_sims, ruin_dd=t.max_drawdown,
+                          risk_frac=spec.wrapper.sizing.risk_pct / 100.0)
+    if mc["p_ruin"] > t.max_mc_ruin:
+        reasons.append(f"P(ruin) {mc['p_ruin']:.0%} > {t.max_mc_ruin:.0%}")
+
+    # --- GATE 4: multiple-testing correction (Deflated Sharpe + PBO) ---
+    perf_matrix = _perf_matrix(spec, grid, start, end, cfg, run_fn)
+    pbo = pbo_cscv(perf_matrix, s=cfg.n_slices)
+    # per-combo Sharpe dispersion feeds the DSR benchmark (breadth of the search)
+    combo_sharpes = [_sharpe_of(run_fn(spec, period=period, params=c)) for c in grid]
+    sr_std = pstdev(combo_sharpes) if len(combo_sharpes) > 1 else 0.0
+    dsr = deflated_sharpe(fwd_trades, n_trials=max(len(grid), 1), sr_std=sr_std)
+
+    if pbo > t.max_pbo:
+        reasons.append(f"PBO {pbo:.0%} > {t.max_pbo:.0%} (overfit)")
+    if dsr < t.min_deflated_sharpe:
+        reasons.append(f"deflated Sharpe {dsr:.2f} < {t.min_deflated_sharpe} (not distinguishable from noise)")
+
+    sc = scorecard(window_consistency, param_stability, dsr, pbo)
+
+    if reasons:
+        return verdict(VerdictType.KILL, sc)
+
+    edge = calculate_edge(combined_fwd_pf, len(fwd_trades))
+    promote = (
+        combined_fwd_pf >= t.ideal_forward_pf and pbo <= t.ideal_pbo
+        and dsr >= t.ideal_deflated_sharpe and mc["p_ruin"] <= t.ideal_mc_ruin
+        and edge > 0
+    )
+    return verdict(VerdictType.PROMOTE if promote else VerdictType.SURVIVE, sc)
+
+
+# --- helpers ---
+def _mt5_tf(tf: str) -> str:
+    tf = tf.strip()
+    return f"M{tf[:-1]}" if tf[:-1].isdigit() and tf[-1].lower() == "m" else tf.upper()
+
+
+def _pf_from_r(rs: list[float]) -> float:
+    gp = sum(r for r in rs if r > 0)
+    gl = abs(sum(r for r in rs if r < 0))
+    return gp / gl if gl else (5.0 if gp else 0.0)
+
+
+def _sharpe_of(exp) -> float:
+    return float(exp.raw_metrics.get("sharpe", 0.0))
+
+
+def _perf_matrix(spec, grid, start, end, cfg, run_fn) -> list[list[float]]:
+    """rows = contiguous date slices, cols = param combos, value = mean trade R."""
+    s, e = datetime.fromisoformat(start), datetime.fromisoformat(end)
+    total_days = (e - s).days
+    bounds = [s + (e - s) * i // cfg.n_slices for i in range(cfg.n_slices + 1)] if total_days else [s, e]
+    matrix = []
+    for i in range(cfg.n_slices):
+        sl = (bounds[i].date().isoformat(), bounds[i + 1].date().isoformat())
+        row = []
+        for c in grid:
+            rs = _trades_r(run_fn(spec, period=sl, params=c))
+            row.append(mean(rs) if rs else 0.0)
+        matrix.append(row)
+    return matrix
+
+
+def _detect_lookahead(spec, start, end, run_fn) -> bool:
+    """Leakage gate: a causal strategy's trades in the first half of the data
+    must NOT change when the second half is unknown. We compare trades produced
+    on the full period against those on the first-half period; any trade that
+    opened and closed inside the first half must be identical. If a feature peeks
+    forward, truncating the future perturbs those early trades.
+
+    Uses compile_to_backtest directly on real bars (not run_fn) so it always
+    tests the actual engine; skipped when run_fn is injected for unit tests."""
+    if run_fn is not run:  # injected fake runner has no real bars to truncate
+        return False
+    bars = load_bars(spec.context.universe[0], _mt5_tf(spec.context.timeframe), start, end)
+    if len(bars) < 200:
+        return False
+    half = len(bars) // 2
+    bt = compile_to_backtest(spec)
+    full = bt(bars)["trades"]
+    trunc = bt(bars.iloc[:half].reset_index(drop=True))["trades"]
+    early_full = [(t["entry_i"], t["exit_i"], t["pnl_r"]) for t in full if t["exit_i"] < half]
+    early_trunc = [(t["entry_i"], t["exit_i"], t["pnl_r"]) for t in trunc if t["exit_i"] < half]
+    return early_full != early_trunc
