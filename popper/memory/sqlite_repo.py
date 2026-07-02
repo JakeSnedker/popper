@@ -22,8 +22,7 @@ CREATE TABLE IF NOT EXISTS hypotheses (
 );
 CREATE TABLE IF NOT EXISTS specs (
     id TEXT PRIMARY KEY, hypothesis_id TEXT, dsl_version TEXT, name TEXT,
-    universe TEXT, timeframe TEXT, features TEXT, signal TEXT, entry TEXT,
-    exit TEXT, sizing TEXT, constraints TEXT, param_space TEXT, created_at TEXT
+    alpha TEXT, wrapper TEXT, context TEXT, param_space TEXT, created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS experiments (
     id TEXT PRIMARY KEY, spec_id TEXT, dataset TEXT, period_start TEXT,
@@ -42,8 +41,8 @@ CREATE TABLE IF NOT EXISTS verdicts (
 
 # columns whose values are JSON-encoded lists/dicts
 _JSON_COLS = {
-    "required_features", "universe", "features", "signal", "entry", "exit",
-    "sizing", "constraints", "param_space", "raw_metrics", "equity_curve", "reasons",
+    "required_features", "alpha", "wrapper", "context",
+    "param_space", "raw_metrics", "equity_curve", "reasons",
 }
 
 

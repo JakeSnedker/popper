@@ -31,7 +31,11 @@ def test_hypothesis_roundtrips_and_gets_id():
 def test_full_trail_record():
     mem = _mem()
     h = mem.add_hypothesis(Hypothesis(claim="momentum persists", mechanism="flow"))
-    s = mem.add_spec(StrategySpec(hypothesis_id=h.id, name="m", universe=["US30"], timeframe="5m"))
+    s = mem.add_spec(StrategySpec(
+        hypothesis_id=h.id, name="m",
+        alpha={"features": ["ema_50"], "signal": "close > ema_50"},
+        context={"universe": ["US30"], "timeframe": "5m"},
+    ))
     e = mem.add_experiment(ExperimentResult(
         spec_id=s.id, dataset="US30", period_start="2024-01-01", period_end="2024-12-31",
         trades_n=10, raw_metrics={"sharpe": 1.2}, equity_curve=[0, 1, 2]))

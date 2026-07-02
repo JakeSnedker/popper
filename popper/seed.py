@@ -17,19 +17,22 @@ from popper.artifacts import (
 from popper.memory import get_memory
 
 
-def _spec(hyp_id: str, name: str, **kw) -> StrategySpec:
-    base = dict(
-        hypothesis_id=hyp_id, name=name, universe=["US30"], timeframe="5m",
-        features=["atr_14", "ema_50", "session_ny"],
-        signal={"entry_long": "close > ema_50 AND session == NY_open AND atr_14 > p[atr_min]"},
-        entry={"type": "market"},
-        exit={"stop": {"type": "atr", "mult": "p[sl_atr]"}, "target": {"type": "rr", "ratio": "p[rr]"}},
-        sizing={"risk_pct": 0.5},
-        constraints={"max_trades_per_day": 3},
+def _spec(hyp_id: str, name: str, *, universe=None, timeframe="5m", features=None) -> StrategySpec:
+    return StrategySpec(
+        hypothesis_id=hyp_id, name=name,
+        alpha={
+            "features": features or ["atr_14", "ema_50", "session_ny"],
+            "signal": "close > ema_50 AND session_ny > 0 AND atr_14 > p[atr_min]",
+        },
+        wrapper={
+            "stop": {"type": "atr", "mult": "p[sl_atr]"},
+            "target": {"type": "rr", "ratio": "p[rr]"},
+            "sizing": {"risk_pct": 0.5},
+            "constraints": {"max_trades_per_day": 3},
+        },
+        context={"universe": universe or ["US30"], "timeframe": timeframe},
         param_space={"atr_min": [0.5, 1.0, 1.5], "sl_atr": [1.0, 1.5, 2.0], "rr": [1.5, 2.0, 2.5, 3.0]},
     )
-    base.update(kw)
-    return StrategySpec(**base)
 
 
 def seed() -> None:

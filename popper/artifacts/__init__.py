@@ -9,12 +9,22 @@ from popper.artifacts.enums import HypothesisStatus, Regime, VerdictType
 from popper.artifacts.experiment import ExperimentResult
 from popper.artifacts.hypothesis import Hypothesis
 from popper.artifacts.scorecard import Scorecard
-from popper.artifacts.strategy_spec import StrategySpec
+from popper.artifacts.strategy_spec import (
+    BASELINE_WRAPPER,
+    Alpha,
+    Context,
+    StrategySpec,
+    Wrapper,
+)
 from popper.artifacts.verdict import Verdict
 
 __all__ = [
     "Hypothesis",
     "StrategySpec",
+    "Alpha",
+    "Wrapper",
+    "Context",
+    "BASELINE_WRAPPER",
     "ExperimentResult",
     "Scorecard",
     "Verdict",
