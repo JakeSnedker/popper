@@ -1,0 +1,25 @@
+# Liquidity-sweep reversal: a stop-run through a 20-bar extreme that closes
+# back inside, confirmed by a stretched fast RSI. Exercises the fuller
+# wrapper: ATR trail + break-even after 1R.
+name: sweep_reversal
+hypothesis_id: H-SWEEP-REV
+alpha:
+  features: [liquidity_sweep, rsi_fast, atr_14]
+  signal: "liquidity_sweep > 0 AND rsi_fast < p[rsi_buy]"
+  signal_short: "liquidity_sweep < 0 AND rsi_fast > p[rsi_sell]"
+wrapper:
+  entry: { type: market }
+  stop: { type: atr, mult: 1.5 }
+  target: { type: rr, ratio: "p[rr]" }
+  trail: { type: atr, mult: 2.0 }
+  break_even: { type: after_r, trigger_r: 1.0 }
+  sizing: { risk_pct: 0.5 }
+  constraints: { max_trades_per_day: 5 }
+context:
+  universe: [US30]
+  timeframe: 5m
+  cost_model: systematic
+param_space:
+  rsi_buy: [30, 35, 40]
+  rsi_sell: [60, 65, 70]
+  rr: [2.0, 3.0]

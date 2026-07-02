@@ -1,0 +1,24 @@
+# NY-open momentum: a wide opening range in the NY session signals an
+# opening drive; join it in the direction of the 50-EMA. Wrapper params
+# are searched via param_space (p[...] references).
+name: ny_open_momentum
+hypothesis_id: H-NY-OPEN
+alpha:
+  features: [session_ny, opening_range, atr_14, ema_50]
+  signal: "session_ny > 0 AND close > ema_50 AND opening_range > p[or_min] * atr_14"
+wrapper:
+  entry: { type: market }
+  stop: { type: atr, mult: "p[sl_atr]" }
+  target: { type: rr, ratio: "p[rr]" }
+  trail: { type: none }
+  break_even: { type: none }
+  sizing: { risk_pct: 0.5 }
+  constraints: { max_trades_per_day: 3 }
+context:
+  universe: [US30]
+  timeframe: 5m
+  cost_model: systematic
+param_space:
+  or_min: [1.0, 1.5, 2.0]
+  sl_atr: [1.0, 1.5, 2.0]
+  rr: [1.5, 2.0, 2.5, 3.0]

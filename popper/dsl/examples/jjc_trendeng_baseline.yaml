@@ -1,0 +1,23 @@
+# JJC-style: an entry PATTERN is the alpha (TrendEng-flavoured momentum bar
+# in an established trend); the wrapper is the fixed Stage-1 BASELINE
+# (SL = 2xATR, TP = 2R) so the alpha's raw edge is measurable (spec/03 gate 0).
+name: jjc_trendeng_baseline
+hypothesis_id: H-JJC-TRENDENG
+alpha:
+  features: [ema_50, htf_trend, atr_14, candle_size]
+  signal: "close > ema_50 AND htf_trend > 0 AND candle_size > p[mom_mult] * atr_14"
+  signal_short: "close < ema_50 AND htf_trend < 0 AND candle_size > p[mom_mult] * atr_14"
+wrapper:
+  entry: { type: market }
+  stop: { type: atr, mult: 2.0 }      # baseline: fixed, NOT searched
+  target: { type: rr, ratio: 2.0 }    # baseline: fixed, NOT searched
+  trail: { type: none }
+  break_even: { type: none }
+  sizing: { risk_pct: 0.5 }
+  constraints: { max_trades_per_day: 3 }
+context:
+  universe: [US30]
+  timeframe: 5m
+  cost_model: systematic
+param_space:
+  mom_mult: [0.8, 1.0, 1.2]

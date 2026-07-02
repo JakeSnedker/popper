@@ -17,7 +17,7 @@ PHASES: list[dict] = [
         "id": 1,
         "name": "Strategy DSL + Compiler",
         "goal": "A safe, structured strategy representation that validates and compiles to a runnable object.",
-        "status": "todo",
+        "status": "done",
         "done_when": "3 hand-authored specs validate and compile.",
     },
     {
