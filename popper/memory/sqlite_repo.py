@@ -29,9 +29,9 @@ CREATE TABLE IF NOT EXISTS experiments (
     period_end TEXT, trades_n INTEGER, raw_metrics TEXT, equity_curve TEXT, created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS scorecards (
-    id TEXT PRIMARY KEY, experiment_id TEXT, robustness REAL, regime_stability REAL,
-    capacity REAL, execution_realism REAL, novelty REAL, deflated_sharpe REAL,
-    pbo REAL, created_at TEXT
+    id TEXT PRIMARY KEY, experiment_id TEXT, robustness REAL, parameter_stability REAL,
+    regime_stability REAL, capacity REAL, execution_realism REAL, novelty REAL,
+    deflated_sharpe REAL, pbo REAL, created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS verdicts (
     id TEXT PRIMARY KEY, hypothesis_id TEXT, experiment_id TEXT, type TEXT,
