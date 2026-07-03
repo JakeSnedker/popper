@@ -59,7 +59,7 @@ PHASES: list[dict] = [
         "id": 7,
         "name": "Orchestrator",
         "goal": "The loop runs itself (AUTONOMY milestone — thin full loop alive).",
-        "status": "todo",
+        "status": "in_progress",
         "done_when": "Unattended run produces hypotheses, kills most, surfaces >=1 survivor.",
     },
     {
