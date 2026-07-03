@@ -62,6 +62,9 @@ def _print_summary(s: dict) -> None:
 
 
 def main() -> None:
+    # ponytail: Windows stdout defaults to cp1252 and mangles the summary's — / arrows.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     cmd = sys.argv[1] if len(sys.argv) > 1 else "help"
 
     if cmd == "run":
