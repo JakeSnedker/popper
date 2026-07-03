@@ -2,6 +2,7 @@
 
     popper run --hypothesis x.yaml [--start YYYY-MM-DD --end YYYY-MM-DD]
                                   # the full loop: store, backtest, falsify, judge
+    popper research --iterations N # the unattended Director loop (autonomy demo)
     popper seed                   # populate alpha memory with example hypotheses
     popper stats                  # print current counts
     popper serve                  # run the API for the dashboard
@@ -61,6 +62,42 @@ def _print_summary(s: dict) -> None:
     print(bar)
 
 
+def _research(argv: list[str]) -> None:
+    import argparse
+
+    p = argparse.ArgumentParser(prog="popper research", description="Unattended Director research loop.")
+    p.add_argument("--iterations", type=int, default=10, help="loop iterations (default 10)")
+    a = p.parse_args(argv)
+
+    from popper.orchestrator import run_research
+    _print_run(run_research(iterations=a.iterations))
+
+
+def _print_run(s) -> None:
+    bar = "=" * 64
+    print(bar)
+    print(f"POPPER RESEARCH RUN — {s.iterations} iterations")
+    print(f"  budget spent (engine: iters): {s.budget_spent}")
+    print(bar)
+    print(f"proposed {s.proposed}  |  killed {s.killed}  |  survived {s.survived}  |  worker refinements {s.worker_runs}")
+    print("-" * 64)
+    print("categories explored:")
+    for et, c in s.category_report().items():
+        flag = " DEAD (pruned)" if c["dead"] else ""
+        print(f"  {et:<16} survivors={c['survivors']} kills={c['kills']}{flag}")
+    print("-" * 64)
+    if s.survivors:
+        print(f"SURVIVORS ({len(s.survivors)}):")
+        for sv in s.survivors:
+            st = sv["stats"]
+            print(f"  [{sv['verdict'].upper()}] {sv['hypothesis_id']}  \"{sv['claim'][:70]}\"")
+            print(f"     trades={st['n_trades']} PF={st['profit_factor']} pbo={st['pbo']} "
+                  f"dsr={st['deflated_sharpe']} novelty={st['novelty']}")
+    else:
+        print("SURVIVORS (0): the gauntlet killed every candidate this run.")
+    print(bar)
+
+
 def main() -> None:
     # ponytail: Windows stdout defaults to cp1252 and mangles the summary's — / arrows.
     if hasattr(sys.stdout, "reconfigure"):
@@ -69,6 +106,8 @@ def main() -> None:
 
     if cmd == "run":
         _run(sys.argv[2:])
+    elif cmd == "research":
+        _research(sys.argv[2:])
     elif cmd == "seed":
         from popper.seed import seed
         seed()

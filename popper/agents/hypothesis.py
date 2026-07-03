@@ -22,8 +22,14 @@ SYSTEM = (
 )
 
 
-def _prompt(view) -> str:
+def _prompt(view, wildcard: bool = False) -> str:
     claims = [e.claim for e in view.hypotheses()][:12]
+    aim = (
+        "WILDCARD: ignore what's crowded — propose a deliberately OFF-MAP idea, "
+        f"ideally an edge type not yet present ({view.whitespace() or 'any fresh angle'})."
+        if wildcard else
+        "Propose ONE new hypothesis targeting a gap."
+    )
     return "\n".join([
         "Current map coverage (edge_type: count):",
         json.dumps(view.coverage()),
@@ -32,13 +38,14 @@ def _prompt(view) -> str:
         *(f"- {c}" for c in claims),
         "",
         f"Features you may require: {', '.join(FEATURES)} (plus ema_<n> for any n).",
-        "Propose ONE new hypothesis targeting a gap.",
+        aim,
     ])
 
 
-def propose(view, llm, model: str = MODELS["hypothesis"]) -> Hypothesis:
-    """Generate one Hypothesis from the blind map view via `llm`."""
-    d = json.loads(strip_fence(llm.complete(SYSTEM, _prompt(view), model)))
+def propose(view, llm, model: str = MODELS["hypothesis"], wildcard: bool = False) -> Hypothesis:
+    """Generate one Hypothesis from the blind map view via `llm`. wildcard=True
+    steers off-map (the Director's 10% exploration budget)."""
+    d = json.loads(strip_fence(llm.complete(SYSTEM, _prompt(view, wildcard), model)))
     regime = d.get("expected_regime", "unknown")
     return Hypothesis(
         claim=d["claim"],

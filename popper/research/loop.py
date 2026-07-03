@@ -61,6 +61,21 @@ def run_loop(
     Everything is persisted to alpha memory (default: the configured store)."""
     mem = mem or get_memory()
     h, spec = load_hypothesis_file(path)
+    return evaluate(h, spec, mem=mem, period=period, cfg=cfg, run_fn=run_fn)
+
+
+def evaluate(
+    h: Hypothesis,
+    spec: StrategySpec,
+    mem=None,
+    period: tuple[str, str] | None = None,
+    cfg: GauntletConfig | None = None,
+    run_fn=run,
+) -> dict:
+    """Store + falsify one (hypothesis, spec) pair and return the summary dict.
+    The shared core of the manual loop AND the Director's explore engine: a bad
+    spec is rejected before anything is stored (validate first)."""
+    mem = mem or get_memory()
     validate_spec(spec)  # DSLValidationError surfaces to the caller before anything is stored
 
     h = mem.add_hypothesis(h)  # enriches: embedding, tags, novelty_score
@@ -71,7 +86,7 @@ def run_loop(
     mem.set_status(h.id, HypothesisStatus.TESTING)
     sc, v = judge(spec, run_fn=run_fn, period=period, cfg=cfg, mem=mem)
 
-    exp = _anchor_experiment(mem, h.id, sc.experiment_id)
+    exp = anchor_experiment(mem, h.id, sc.experiment_id)
     complete_scorecard(sc, mem, h, exp)  # novelty/correlation/regime/behaviour in place
     sc = mem.add_scorecard(sc)
     v = mem.add_verdict(v)
@@ -107,7 +122,7 @@ def run_loop(
     }
 
 
-def _anchor_experiment(mem, hypothesis_id: str, experiment_id: str) -> ExperimentResult:
+def anchor_experiment(mem, hypothesis_id: str, experiment_id: str) -> ExperimentResult:
     """The full-period experiment judge persisted, from the hypothesis trail."""
     for e in mem.record(hypothesis_id).get("experiments", []):
         if e["id"] == experiment_id:
