@@ -18,6 +18,9 @@ _EDGE_KEYWORDS = {
     "liquidity": ("liquidity", "stop-run", "stop run", "order", "imbalance"),
 }
 
+# the known edge-type vocabulary — the map's coverage axis (spec/02 whitespace)
+EDGE_TYPES = tuple(_EDGE_KEYWORDS)
+
 
 def edge_type(hypothesis) -> str:
     """Pre-test facet from the claim/features. Provisional — behaviour may relocate."""

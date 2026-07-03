@@ -156,6 +156,10 @@ _EXACT = {
 _EMA_RE = re.compile(r"^ema_(\d+)$")
 
 
+# the exact feature names an alpha may reference (plus the ema_<n> family below)
+FEATURES = tuple(_EXACT)
+
+
 def resolve_feature(name: str):
     """Feature name -> callable(bars) -> Series, or None if unknown."""
     if name in _EXACT:
