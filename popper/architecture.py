@@ -13,37 +13,37 @@ SUBSYSTEMS: list[dict] = [
     {
         "id": "data", "name": "Data & Features", "group": "input",
         "role": "Ingest MT5 (US30/NAS100) into clean OHLCV with session + regime tags; build the feature store.",
-        "consumes": "MT5 raw feed", "produces": "Feature store", "phase": 2, "status": "planned",
+        "consumes": "MT5 raw feed", "produces": "Feature store", "phase": 2, "status": "partial",
     },
     {
         "id": "hypothesis", "name": "Hypothesis Engine", "group": "loop",
         "role": "Propose a falsifiable claim about a market mechanism. Novelty-gated against alpha memory.",
-        "consumes": "Alpha memory", "produces": "Hypothesis", "phase": 6, "status": "planned",
+        "consumes": "Alpha memory", "produces": "Hypothesis", "phase": 6, "status": "built",
     },
     {
         "id": "synthesis", "name": "Synthesis Agent", "group": "loop",
         "role": "Translate a hypothesis into a valid, structured Strategy DSL spec.",
-        "consumes": "Hypothesis", "produces": "StrategySpec", "phase": 6, "status": "planned",
+        "consumes": "Hypothesis", "produces": "StrategySpec", "phase": 6, "status": "built",
     },
     {
         "id": "dsl", "name": "Strategy DSL + Compiler", "group": "loop",
         "role": "Safe structured strategy representation; compiles to backtest, simulation, and live targets.",
-        "consumes": "StrategySpec", "produces": "Compiled strategy", "phase": 1, "status": "next",
+        "consumes": "StrategySpec", "produces": "Compiled strategy", "phase": 1, "status": "built",
     },
     {
         "id": "runner", "name": "Experiment Runner", "group": "loop",
         "role": "Execute the compiled strategy over historical data and record the raw result.",
-        "consumes": "Compiled strategy", "produces": "ExperimentResult", "phase": 2, "status": "planned",
+        "consumes": "Compiled strategy", "produces": "ExperimentResult", "phase": 2, "status": "built",
     },
     {
         "id": "scorecard", "name": "Scorecard", "group": "loop",
         "role": "Evaluate beyond PnL: robustness, regime stability, capacity, execution realism, novelty.",
-        "consumes": "ExperimentResult", "produces": "Scorecard", "phase": 4, "status": "partial",
+        "consumes": "ExperimentResult", "produces": "Scorecard", "phase": 4, "status": "built",
     },
     {
         "id": "falsify", "name": "Falsification Gauntlet", "group": "loop",
         "role": "Try to disprove the alpha. Purged CV, Deflated Sharpe, PBO, parameter stability. The moat.",
-        "consumes": "Scorecard", "produces": "Verdict", "phase": 3, "status": "planned",
+        "consumes": "Scorecard", "produces": "Verdict", "phase": 3, "status": "built",
     },
     {
         "id": "promote", "name": "Promotion / Production", "group": "output",
@@ -58,7 +58,7 @@ SUBSYSTEMS: list[dict] = [
     {
         "id": "orchestrator", "name": "Orchestrator", "group": "cross",
         "role": "Conduct the loop: schedule cycles, route artifacts, manage budget/stop, wire feedback.",
-        "consumes": "All subsystems", "produces": "Research cycles", "phase": 7, "status": "planned",
+        "consumes": "All subsystems", "produces": "Research cycles", "phase": 7, "status": "built",
     },
 ]
 
