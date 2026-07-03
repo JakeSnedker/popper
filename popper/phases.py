@@ -45,7 +45,7 @@ PHASES: list[dict] = [
         "id": 5,
         "name": "Manual full loop",
         "goal": "Hand-written hypothesis -> system does the rest end-to-end (TANGIBILITY milestone).",
-        "status": "todo",
+        "status": "done",
         "done_when": "One CLI command takes a hypothesis to a stored, scored, judged result.",
     },
     {
