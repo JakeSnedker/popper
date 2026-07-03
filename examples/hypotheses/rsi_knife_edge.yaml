@@ -1,0 +1,28 @@
+# A deliberately weak idea: a narrow RSI band with a fine parameter grid and no
+# mechanism beyond curve-fitting. The gauntlet should KILL it (knife-edge
+# params, in-sample winners that flip out-of-sample -> high PBO).
+# Run: popper run --hypothesis examples/hypotheses/rsi_knife_edge.yaml
+hypothesis:
+  claim: >-
+    US30 rallies whenever the fast RSI sits inside a specific narrow band above
+    the 20-EMA; the exact band boundaries are the edge.
+  mechanism: >-
+    None beyond the pattern itself — the band is chosen by searching, which is
+    exactly the overfitting failure mode the gauntlet exists to catch.
+  rationale: Negative control for the falsification loop.
+spec:
+  name: rsi_knife_edge
+  alpha:
+    features: [ema_20, rsi_fast]
+    signal: "close > ema_20 AND rsi_fast > p[rsi_lo] AND rsi_fast < p[rsi_hi]"
+  wrapper:
+    stop: { type: atr, mult: 2.0 }
+    target: { type: rr, ratio: 2.0 }
+    sizing: { risk_pct: 0.5 }
+  context:
+    universe: [US30]
+    timeframe: 5m
+    cost_model: systematic
+  param_space:
+    rsi_lo: [30, 40, 45, 50]
+    rsi_hi: [55, 60, 70, 80]

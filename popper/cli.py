@@ -1,8 +1,10 @@
 """Popper CLI.
 
-    python -m popper.cli seed     # populate alpha memory with example hypotheses
-    python -m popper.cli stats    # print current counts
-    python -m popper.cli serve    # run the API for the dashboard
+    popper run --hypothesis x.yaml [--start YYYY-MM-DD --end YYYY-MM-DD]
+                                  # the full loop: store, backtest, falsify, judge
+    popper seed                   # populate alpha memory with example hypotheses
+    popper stats                  # print current counts
+    popper serve                  # run the API for the dashboard
 """
 
 import sys
@@ -10,10 +12,61 @@ import sys
 from popper.config import settings
 
 
+def _run(argv: list[str]) -> None:
+    import argparse
+
+    p = argparse.ArgumentParser(prog="popper run", description="Run one hypothesis through the full loop.")
+    p.add_argument("--hypothesis", required=True, help="combined hypothesis+spec YAML (examples/hypotheses/)")
+    p.add_argument("--start", help="period start YYYY-MM-DD (default: all available data)")
+    p.add_argument("--end", help="period end YYYY-MM-DD")
+    a = p.parse_args(argv)
+    period = (a.start, a.end) if a.start and a.end else None
+
+    from popper.dsl import DSLValidationError
+    from popper.research import run_loop
+
+    try:
+        s = run_loop(a.hypothesis, period=period)
+    except (DSLValidationError, ValueError) as e:
+        sys.exit(f"hypothesis file rejected: {e}")
+    _print_summary(s)
+
+
+def _print_summary(s: dict) -> None:
+    bar = "=" * 64
+    print(bar)
+    print(f"HYPOTHESIS {s['hypothesis_id']}")
+    print(f'  "{s["claim"]}"')
+    if s["stale"]:
+        print("  ! STALE — near-duplicate of a prior idea (ran anyway, human's call)")
+    print(bar)
+    print(f"VERDICT: {s['verdict'].upper()}   (hypothesis -> {s['status']})")
+    for r in s["reasons"]:
+        print(f"  x {r}")
+    print("-" * 64)
+    st = s["stats"]
+    rows = [
+        ("trades", st["n_trades"]), ("profit_factor", st["profit_factor"]),
+        ("expected_edge", st["expected_edge"]), ("pbo", st["pbo"]),
+        ("deflated_sharpe", st["deflated_sharpe"]), ("robustness", st["robustness"]),
+        ("param_stability", st["param_stability"]), ("regime_stability", st["regime_stability"]),
+        ("novelty", st["novelty"]), ("correlation", st["correlation"]),
+    ]
+    for name, val in rows:
+        print(f"  {name:<18} {val}")
+    print("-" * 64)
+    print("stored to alpha memory: "
+          f"{s['hypothesis_id']} -> {s['spec_id']} -> {s['experiment_id']} "
+          f"-> {s['scorecard_id']} -> {s['verdict_id']}")
+    print(bar)
+
+
 def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "help"
 
-    if cmd == "seed":
+    if cmd == "run":
+        _run(sys.argv[2:])
+    elif cmd == "seed":
         from popper.seed import seed
         seed()
     elif cmd == "stats":

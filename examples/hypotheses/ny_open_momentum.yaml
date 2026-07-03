@@ -1,0 +1,32 @@
+# The full-loop input format: one falsifiable claim + the spec that tests it.
+# Run: popper run --hypothesis examples/hypotheses/ny_open_momentum.yaml
+hypothesis:
+  claim: >-
+    A wide NY opening range signals an institutional opening drive on US30;
+    price continues in the drive's direction when aligned with the 50-EMA trend.
+  mechanism: >-
+    Overnight order imbalance resolves at the cash open: a wide opening range
+    means large players are repricing, and their flow persists past the range
+    because execution algos work orders over the following hour.
+  rationale: Classic opening-drive behaviour; the JJC TrendEng family exploits the same session structure.
+spec:
+  name: ny_open_momentum
+  alpha:
+    features: [session_ny, opening_range, atr_14, ema_50]
+    signal: "session_ny > 0 AND close > ema_50 AND opening_range > p[or_min] * atr_14"
+  wrapper:
+    entry: { type: market }
+    stop: { type: atr, mult: "p[sl_atr]" }
+    target: { type: rr, ratio: "p[rr]" }
+    trail: { type: none }
+    break_even: { type: none }
+    sizing: { risk_pct: 0.5 }
+    constraints: { max_trades_per_day: 3 }
+  context:
+    universe: [US30]
+    timeframe: 5m
+    cost_model: systematic
+  param_space:
+    or_min: [1.0, 1.5, 2.0]
+    sl_atr: [1.0, 1.5, 2.0]
+    rr: [1.5, 2.0, 2.5, 3.0]
