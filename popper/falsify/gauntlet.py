@@ -127,6 +127,7 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
     cfg = cfg or GauntletConfig()
     t = cfg.thresholds
     reasons: list[str] = []
+    diag: dict = {}  # per-gate glass box — every computed value + its threshold
 
     # discover the data period if not supplied
     if period is None:
@@ -148,6 +149,7 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
             parameter_stability=round(param_stability, 3),
             deflated_sharpe=round(dsr, 3),
             pbo=round(pbo, 3),
+            diagnostics=diag,  # whatever gates ran up to this return path
         )
 
     def verdict(vtype, sc) -> tuple[Scorecard, Verdict]:
@@ -155,7 +157,9 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
         return sc, v
 
     # --- GATE 0: leakage / look-ahead ---
-    if _detect_lookahead(spec, start, end, run_fn):
+    leaked = _detect_lookahead(spec, start, end, run_fn)
+    diag["gate0_leakage"] = {"passed": not leaked}
+    if leaked:
         reasons.append("leakage: look-ahead detected (future bars change past trades)")
         return verdict(VerdictType.KILL, scorecard(0, 0, 0, 1.0))
 
@@ -163,10 +167,15 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
     windows = calculate_windows(start, end, cfg)
     if len(windows) < cfg.min_windows:
         reasons.append(f"insufficient data: {len(windows)} WF windows < {cfg.min_windows}")
+        diag["gate1_walkforward"] = {
+            "windows": [], "n_windows": len(windows), "min_windows": cfg.min_windows,
+            "passed": False,
+        }
         return verdict(VerdictType.KILL, scorecard(0, 0, 0, 1.0))
 
     fwd_trades: list[float] = []
     fwd_pfs, is_pfs, win_ok = [], [], 0
+    win_diag: list[dict] = []
     for w in windows:
         # optimise IS: pick best param by PF on the optimisation slice
         is_runs = [(c, run_fn(spec, period=w["opt"], params=c)) for c in grid]
@@ -177,34 +186,59 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
         fwd_trades += _trades_r(oos)
         if oos.trades_n >= 1 and _pf(oos) > 1.0:
             win_ok += 1
+        win_diag.append({"opt": list(w["opt"]), "fwd": list(w["fwd"]),
+                         "is_pf": round(_pf(best_is), 4), "fwd_pf": round(_pf(oos), 4)})
 
     combined_fwd_pf = _pf_from_r(fwd_trades)
     wfe = (mean(fwd_pfs) / mean(is_pfs)) if is_pfs and mean(is_pfs) > 0 else 0.0
     window_consistency = win_ok / len(windows)
     avg_fwd_trades = len(fwd_trades) / len(windows)
 
+    n_before = len(reasons)
     if avg_fwd_trades < t.min_trades_per_window:
         reasons.append(f"forward trades/window {avg_fwd_trades:.0f} < {t.min_trades_per_window}")
     if combined_fwd_pf < t.min_forward_pf:
         reasons.append(f"forward PF {combined_fwd_pf:.3f} < {t.min_forward_pf}")
     if wfe < t.min_wfe:
         reasons.append(f"walk-forward efficiency {wfe:.2f} < {t.min_wfe}")
+    diag["gate1_walkforward"] = {
+        "windows": win_diag,
+        "wfe": round(wfe, 4), "wfe_threshold": t.min_wfe,
+        "window_consistency": round(window_consistency, 4),
+        "avg_fwd_trades": round(avg_fwd_trades, 2), "min_trades": t.min_trades_per_window,
+        "combined_fwd_pf": round(combined_fwd_pf, 4), "min_forward_pf": t.min_forward_pf,
+        "passed": len(reasons) == n_before,
+    }
 
     # --- GATE 2: parameter-neighbourhood robustness (over full period) ---
     grid_pfs = [_pf(run_fn(spec, period=period, params=c)) for c in grid]
     profitable_frac = mean(1.0 if p > 1.0 else 0.0 for p in grid_pfs)
     pf_cv = (pstdev(grid_pfs) / mean(grid_pfs)) if len(grid_pfs) > 1 and mean(grid_pfs) > 0 else 1.0
     param_stability = max(0.0, min(profitable_frac, 1.0 - min(pf_cv, 1.0)))
+    n_before = len(reasons)
     if profitable_frac < t.min_profitable_fraction:
         reasons.append(f"only {profitable_frac:.0%} of param grid profitable < {t.min_profitable_fraction:.0%}")
     if pf_cv > t.max_pf_cv and len(grid) > 1:
         reasons.append(f"PF dispersion across grid {pf_cv:.0%} > {t.max_pf_cv:.0%} (knife-edge)")
+    diag["gate2_robustness"] = {
+        "profitable_frac": round(profitable_frac, 4), "min_profitable_fraction": t.min_profitable_fraction,
+        "pf_cv": round(pf_cv, 4), "max_pf_cv": t.max_pf_cv,
+        "grid_pfs": [round(p, 4) for p in grid_pfs],
+        "passed": len(reasons) == n_before,
+    }
 
     # --- GATE 3: Monte Carlo ruin (on the forward OOS trades) ---
     mc = monte_carlo_ruin(fwd_trades, n_sims=cfg.mc_sims, ruin_dd=t.max_drawdown,
                           risk_frac=spec.wrapper.sizing.risk_pct / 100.0)
     if mc["p_ruin"] > t.max_mc_ruin:
         reasons.append(f"P(ruin) {mc['p_ruin']:.0%} > {t.max_mc_ruin:.0%}")
+    diag["gate3_mc_ruin"] = {
+        "p_ruin": round(mc["p_ruin"], 4), "p_profit": round(mc["p_profit"], 4),
+        "dd_mean": round(mc["dd_mean"], 4), "dd_95": round(mc["dd_95"], 4),
+        "dd_worst": round(mc["dd_worst"], 4),
+        "max_mc_ruin": t.max_mc_ruin, "ruin_dd": t.max_drawdown,
+        "passed": mc["p_ruin"] <= t.max_mc_ruin,
+    }
 
     # --- GATE 4: multiple-testing correction (Deflated Sharpe + PBO) ---
     perf_matrix = _perf_matrix(spec, grid, start, end, cfg, run_fn)
@@ -214,10 +248,17 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
     sr_std = pstdev(combo_sharpes) if len(combo_sharpes) > 1 else 0.0
     dsr = deflated_sharpe(fwd_trades, n_trials=max(len(grid), 1), sr_std=sr_std)
 
+    n_before = len(reasons)
     if pbo > t.max_pbo:
         reasons.append(f"PBO {pbo:.0%} > {t.max_pbo:.0%} (overfit)")
     if dsr < t.min_deflated_sharpe:
         reasons.append(f"deflated Sharpe {dsr:.2f} < {t.min_deflated_sharpe} (not distinguishable from noise)")
+    diag["gate4_multiple_testing"] = {
+        "pbo": round(pbo, 4), "max_pbo": t.max_pbo,
+        "dsr": round(dsr, 4), "min_deflated_sharpe": t.min_deflated_sharpe,
+        "sr_std": round(sr_std, 4), "n_trials": max(len(grid), 1),
+        "passed": len(reasons) == n_before,
+    }
 
     sc = scorecard(window_consistency, param_stability, dsr, pbo)
 

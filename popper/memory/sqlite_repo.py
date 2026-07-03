@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS experiments (
 CREATE TABLE IF NOT EXISTS scorecards (
     id TEXT PRIMARY KEY, experiment_id TEXT, robustness REAL, parameter_stability REAL,
     regime_stability REAL, capacity REAL, execution_realism REAL, novelty REAL,
-    correlation REAL, deflated_sharpe REAL, pbo REAL, behaviour_signature TEXT, created_at TEXT
+    correlation REAL, deflated_sharpe REAL, pbo REAL, behaviour_signature TEXT,
+    diagnostics TEXT, created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS verdicts (
     id TEXT PRIMARY KEY, hypothesis_id TEXT, experiment_id TEXT, type TEXT,
@@ -44,7 +45,7 @@ CREATE TABLE IF NOT EXISTS verdicts (
 _JSON_COLS = {
     "required_features", "embedding", "tags", "behaviour_signature",
     "alpha", "wrapper", "context",
-    "param_space", "raw_metrics", "equity_curve", "reasons",
+    "param_space", "raw_metrics", "equity_curve", "reasons", "diagnostics",
 }
 
 
@@ -72,6 +73,10 @@ class SqliteMemory(AlphaMemory):
         self._lock = threading.Lock()
         with self._connect() as con:
             con.executescript(_SCHEMA)
+            try:  # migrate pre-Phase-8 DBs (created before the diagnostics column)
+                con.execute("ALTER TABLE scorecards ADD COLUMN diagnostics TEXT")
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.path, check_same_thread=False)
