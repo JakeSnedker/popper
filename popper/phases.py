@@ -52,7 +52,7 @@ PHASES: list[dict] = [
         "id": 6,
         "name": "Research agents",
         "goal": "Claude generates hypotheses and DSL specs (novelty-gated, compiler-repair loop).",
-        "status": "todo",
+        "status": "in_progress",
         "done_when": "Agents produce specs that pass validation without human edits.",
     },
     {
