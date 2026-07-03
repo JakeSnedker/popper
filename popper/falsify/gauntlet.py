@@ -120,8 +120,10 @@ def _trades_r(exp) -> list[float]:
 
 def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
           cfg: GauntletConfig | None = None, mem=None) -> tuple[Scorecard, Verdict]:
-    """Run the gauntlet. Returns (Scorecard, Verdict). If `mem`, persists both
-    (the experiment on the full period is stored to anchor experiment_id)."""
+    """Run the gauntlet. Returns (Scorecard, Verdict). If `mem`, persists the
+    full-period anchor experiment (its id anchors experiment_id on both).
+    Scorecard/Verdict persistence is the caller's job — the research loop
+    completes the map-derived fields (novelty/correlation/...) before storing."""
     cfg = cfg or GauntletConfig()
     t = cfg.thresholds
     reasons: list[str] = []
@@ -135,6 +137,8 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
 
     # anchor experiment: full-period run at default params
     full = run_fn(spec, period=period, params=None)
+    if mem is not None and full.id is None:
+        full = mem.add_experiment(full)
     exp_id = full.id or ""
 
     def scorecard(robustness, param_stability, dsr, pbo) -> Scorecard:
@@ -148,12 +152,6 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
 
     def verdict(vtype, sc) -> tuple[Scorecard, Verdict]:
         v = Verdict(hypothesis_id=spec.hypothesis_id, experiment_id=exp_id, type=vtype, reasons=reasons)
-        if mem is not None:
-            if not exp_id:
-                pass
-            sc = mem.add_scorecard(sc)
-            v.experiment_id = sc.experiment_id
-            v = mem.add_verdict(v)
         return sc, v
 
     # --- GATE 0: leakage / look-ahead ---
