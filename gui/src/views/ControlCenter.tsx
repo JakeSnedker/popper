@@ -1,5 +1,7 @@
 import type { Architecture, View } from "../lib/types";
+import { AlphaMap } from "../components/AlphaMap";
 import { PipelineMap } from "../components/PipelineMap";
+import { VerdictStream } from "../components/VerdictStream";
 
 function ProgressRing({ pct }: { pct: number }) {
   const r = 30;
@@ -21,9 +23,11 @@ function ProgressRing({ pct }: { pct: number }) {
 export function ControlCenter({
   arch,
   onNavigate,
+  onSelectHypothesis,
 }: {
   arch: Architecture;
   onNavigate: (v: View) => void;
+  onSelectHypothesis: (id: string) => void;
 }) {
   const open = (id: string) => onNavigate({ kind: "subsystem", id });
 
@@ -48,6 +52,22 @@ export function ControlCenter({
           </button>
         </div>
       </div>
+
+      {/* alpha map + verdict stream */}
+      <section>
+        <h2 className="text-sm font-semibold text-slate-200 mb-1">Alpha Map</h2>
+        <p className="text-xs text-slate-500 mb-4">
+          Every hypothesis in alpha memory, embedded into 2D — clusters are crowded ideas, verdict
+          colors show what survived, dashed chips mark unexplored edge-types. Click a point to open
+          its full record.
+        </p>
+        <div className="grid lg:grid-cols-3 gap-4 items-start">
+          <div className="lg:col-span-2">
+            <AlphaMap onSelect={onSelectHypothesis} />
+          </div>
+          <VerdictStream onSelect={onSelectHypothesis} />
+        </div>
+      </section>
 
       {/* the map */}
       <section>

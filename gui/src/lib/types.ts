@@ -20,20 +20,25 @@ export interface Hypothesis {
   created_at: string;
 }
 
+// DSL v0.2 shape (alpha / wrapper / context) — matches popper/artifacts/strategy_spec.py
 export interface StrategySpec {
   id: string;
   hypothesis_id: string;
   dsl_version: string;
   name: string;
-  universe: string[];
-  timeframe: string;
-  features: string[];
-  signal: Record<string, unknown>;
-  entry: Record<string, unknown>;
-  exit: Record<string, unknown>;
-  sizing: Record<string, unknown>;
-  constraints: Record<string, unknown>;
+  alpha: {
+    features: string[];
+    signal: string;
+    signal_short: string | null;
+  };
+  wrapper: Record<string, unknown>;
+  context: {
+    universe: string[];
+    timeframe: string;
+    cost_model: string;
+  };
   param_space: Record<string, unknown>;
+  created_at: string;
 }
 
 export interface ExperimentResult {
@@ -43,7 +48,7 @@ export interface ExperimentResult {
   period_start: string;
   period_end: string;
   trades_n: number;
-  raw_metrics: Record<string, number>;
+  raw_metrics: Record<string, unknown>; // numbers + a `trades` array of trade dicts
   equity_curve: number[];
 }
 
@@ -57,6 +62,54 @@ export interface Scorecard {
   novelty: number;
   deflated_sharpe: number;
   pbo: number;
+  diagnostics: Record<string, GateDiag>;
+}
+
+/** One walk-forward window from gate 1: [start, end] date pairs + in/out-of-sample PF. */
+export interface WalkForwardWindow {
+  opt: [string, string];
+  fwd: [string, string];
+  is_pf: number;
+  fwd_pf: number;
+}
+
+/** Per-gate glass box from the Falsification Gauntlet. Every gate carries
+ * `passed`; the rest of the fields depend on which gate it is (gates that
+ * never ran are simply absent from the diagnostics dict). */
+export interface GateDiag {
+  passed: boolean;
+  // gate 1 · walk-forward
+  windows?: WalkForwardWindow[];
+  n_windows?: number;
+  min_windows?: number;
+  wfe?: number;
+  wfe_threshold?: number;
+  window_consistency?: number;
+  avg_fwd_trades?: number;
+  min_trades?: number;
+  combined_fwd_pf?: number;
+  min_forward_pf?: number;
+  // gate 2 · parameter robustness
+  profitable_frac?: number;
+  min_profitable_fraction?: number;
+  pf_cv?: number;
+  max_pf_cv?: number;
+  grid_pfs?: number[];
+  // gate 3 · monte carlo ruin
+  p_ruin?: number;
+  p_profit?: number;
+  dd_mean?: number;
+  dd_95?: number;
+  dd_worst?: number;
+  max_mc_ruin?: number;
+  ruin_dd?: number;
+  // gate 4 · multiple testing
+  pbo?: number;
+  max_pbo?: number;
+  dsr?: number;
+  min_deflated_sharpe?: number;
+  sr_std?: number;
+  n_trials?: number;
 }
 
 export interface Verdict {
@@ -118,6 +171,41 @@ export interface Architecture {
   cross: string[];
   artifacts: Artifact[];
   progress: { done: number; in_progress: number; total: number; pct: number };
+}
+
+// --- Phase 8 observability ---
+
+export interface MapPoint {
+  id: string;
+  claim: string;
+  edge_type: string;
+  novelty: number;
+  verdict: VerdictType | null;
+  x: number;
+  y: number;
+}
+
+export interface MapResponse {
+  categories: Record<string, number>;
+  whitespace: string[];
+  points: MapPoint[];
+}
+
+export interface VerdictFeedItem {
+  hypothesis_id: string;
+  claim: string;
+  type: VerdictType;
+  reasons: string[];
+  created_at: string;
+  profit_factor: number | null;
+  deflated_sharpe: number | null;
+}
+
+export interface TimelinePoint {
+  profit_factor: number | null;
+  deflated_sharpe: number | null;
+  robustness: number | null;
+  verdict: VerdictType | null;
 }
 
 // app navigation

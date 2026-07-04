@@ -1,4 +1,14 @@
-import type { SubsystemStatus } from "./types";
+import type { SubsystemStatus, VerdictType } from "./types";
+
+/** Semantic verdict colors for SVG marks (matches VerdictBadge / StatusBadge
+ * tailwind classes: red-400 / emerald-400 / violet-400, slate-500 = untested).
+ * These carry meaning — never reuse the accent blue for verdict encoding. */
+export const VERDICT_HEX: Record<VerdictType | "none", string> = {
+  kill: "#f87171",
+  survive: "#34d399",
+  promote: "#a78bfa",
+  none: "#64748b",
+};
 
 export interface StatusStyle {
   label: string;

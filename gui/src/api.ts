@@ -2,8 +2,11 @@ import type {
   Architecture,
   HypothesisRecord,
   Hypothesis,
+  MapResponse,
   PhasesResponse,
   Stats,
+  TimelinePoint,
+  VerdictFeedItem,
 } from "./lib/types";
 
 async function get<T>(url: string): Promise<T> {
@@ -25,4 +28,8 @@ export const api = {
       "/api/hypotheses" + (status ? `?status=${status}` : "")
     ),
   record: (id: string) => get<HypothesisRecord>(`/api/hypotheses/${id}`),
+  map: () => get<MapResponse>("/api/map"),
+  verdicts: (limit = 20) => get<{ verdicts: VerdictFeedItem[] }>(`/api/verdicts?limit=${limit}`),
+  timeline: (id: string) =>
+    get<{ experiments: TimelinePoint[] }>(`/api/timeline?hypothesis_id=${encodeURIComponent(id)}`),
 };

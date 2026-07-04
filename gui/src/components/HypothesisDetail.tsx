@@ -1,5 +1,8 @@
+import { Fragment } from "react";
 import { api } from "../api";
 import { useAsync } from "../lib/useAsync";
+import { FalsificationBreakdown } from "./FalsificationBreakdown";
+import { ImprovementChart } from "./ImprovementChart";
 import { ScorecardView } from "./ScorecardView";
 import { StatusBadge, VerdictBadge } from "./StatusBadge";
 import { ErrorState, LoadingRows } from "./States";
@@ -72,10 +75,11 @@ export function HypothesisDetail({ id, onClose }: { id: string; onClose: () => v
                   <div className="card p-3 text-sm space-y-1">
                     <div className="text-slate-200 font-medium">{s.name}</div>
                     <div className="text-xs text-slate-500">
-                      {s.universe.join(", ")} · {s.timeframe} · features: {s.features.join(", ")}
+                      {s.context.universe.join(", ")} · {s.context.timeframe} · features:{" "}
+                      {s.alpha.features.join(", ")}
                     </div>
-                    <pre className="text-xs text-slate-400 bg-ink-900 rounded p-2 mt-2 overflow-x-auto">
-                      {JSON.stringify(s.signal, null, 2)}
+                    <pre className="text-xs text-slate-400 bg-ink-900 rounded p-2 mt-2 overflow-x-auto whitespace-pre-wrap">
+                      {s.alpha.signal}
                     </pre>
                   </div>
                 </Section>
@@ -88,21 +92,36 @@ export function HypothesisDetail({ id, onClose }: { id: string; onClose: () => v
                       {e.dataset} · {e.trades_n} trades
                     </div>
                     <div className="grid grid-cols-3 gap-2">
-                      {Object.entries(e.raw_metrics).map(([k, v]) => (
-                        <div key={k}>
-                          <div className="text-xs text-slate-500 capitalize">{k.replace("_", " ")}</div>
-                          <div className="text-slate-200 font-mono">{v}</div>
-                        </div>
-                      ))}
+                      {Object.entries(e.raw_metrics)
+                        .filter((kv): kv is [string, number] => typeof kv[1] === "number")
+                        .map(([k, v]) => (
+                          <div key={k}>
+                            <div className="text-xs text-slate-500 capitalize">{k.replace("_", " ")}</div>
+                            <div className="text-slate-200 font-mono">
+                              {Number.isInteger(v) ? v : v.toFixed(3)}
+                            </div>
+                          </div>
+                        ))}
                     </div>
                   </div>
                 </Section>
               ))}
 
-              {data.scorecards.map((sc) => (
-                <Section key={sc.id} title={`Scorecard · ${sc.id} (beyond PnL)`}>
-                  <ScorecardView sc={sc} />
+              {data.experiments.length > 0 && (
+                <Section title="Alpha improvement (refinement trend)">
+                  <ImprovementChart hypothesisId={id} />
                 </Section>
+              )}
+
+              {data.scorecards.map((sc) => (
+                <Fragment key={sc.id}>
+                  <Section title={`Scorecard · ${sc.id} (beyond PnL)`}>
+                    <ScorecardView sc={sc} />
+                  </Section>
+                  <Section title={`Falsification breakdown · ${sc.id} (per-gate glass box)`}>
+                    <FalsificationBreakdown diagnostics={sc.diagnostics} />
+                  </Section>
+                </Fragment>
               ))}
 
               {data.verdicts.map((v) => (

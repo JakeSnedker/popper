@@ -75,7 +75,9 @@ export default function App() {
         </header>
 
         <main className="flex-1 overflow-y-auto p-6">
-          {view.kind === "home" && <ControlCenter arch={data} onNavigate={setView} />}
+          {view.kind === "home" && (
+            <ControlCenter arch={data} onNavigate={setView} onSelectHypothesis={setSelected} />
+          )}
           {view.kind === "roadmap" && <Roadmap />}
           {view.kind === "subsystem" && current && (
             <SubsystemView
