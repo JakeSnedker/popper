@@ -7,7 +7,7 @@ All metrics normalized 0..1 where higher = better, except pbo (lower = better).
 
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def _now() -> datetime:
@@ -29,3 +29,8 @@ class Scorecard(BaseModel):
     behaviour_signature: dict = Field(default_factory=dict)  # post-test behaviour facets
     diagnostics: dict = Field(default_factory=dict)  # per-gate values vs thresholds (glass box)
     created_at: datetime = Field(default_factory=_now)
+
+    @field_validator("behaviour_signature", "diagnostics", mode="before")
+    @classmethod
+    def _none_to_empty(cls, v):  # pre-Phase-8 DB rows store diagnostics as NULL
+        return {} if v is None else v

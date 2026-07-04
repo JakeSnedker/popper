@@ -1,13 +1,16 @@
 """FastAPI app serving the dashboard: build phases + the alpha-memory trail."""
 
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from popper import __version__
+from popper.agents.views import BlindView
 from popper.architecture import architecture
 from popper.artifacts import Hypothesis, HypothesisStatus
 from popper.config import settings
 from popper.memory import get_memory
+from popper.memory.map import edge_type
 from popper.phases import PHASES, progress
 
 app = FastAPI(title="Popper API", version=__version__)
@@ -62,3 +65,95 @@ def create_hypothesis(h: Hypothesis) -> dict:
         raise HTTPException(status_code=409, detail="stale: this idea has already been explored")
     stored = mem.add_hypothesis(h)
     return stored.model_dump(mode="json")
+
+
+# --- Phase 8 observability: see inside the loop ---
+
+def _pca_2d(embeddings: list[list[float]]) -> list[tuple[float, float]]:
+    """Project n embeddings onto their first 2 principal components (center + SVD)."""
+    if not embeddings:
+        return []
+    x = np.asarray(embeddings, dtype=float)
+    if x.shape[0] == 1:
+        return [(0.0, 0.0)]  # a single point has no spread to project
+    centered = x - x.mean(axis=0)
+    _, _, vt = np.linalg.svd(centered, full_matrices=False)
+    proj = centered @ vt[:2].T
+    if proj.shape[1] < 2:  # <2-dim embedding space: pad the missing axis with 0
+        proj = np.pad(proj, ((0, 0), (0, 2 - proj.shape[1])))
+    return [(round(float(px), 4), round(float(py), 4)) for px, py in proj]
+
+
+def _latest_verdict_type(rec: dict) -> str | None:
+    verdicts = rec.get("verdicts", [])
+    if not verdicts:
+        return None
+    return max(verdicts, key=lambda v: v["created_at"])["type"]
+
+
+@app.get("/api/map")
+def get_map() -> dict:
+    mem = get_memory()
+    view = BlindView(mem)
+    hyps = [h for h in mem.list_hypotheses() if h.embedding]
+    coords = _pca_2d([h.embedding for h in hyps])
+    points = [
+        {
+            "id": h.id,
+            "claim": h.claim,
+            "edge_type": edge_type(h),
+            "novelty": h.novelty_score,
+            # ponytail: one record() per hypothesis just for the verdict — fine at
+            # map scale (~10s); add a verdicts-per-hypothesis query if it grows.
+            "verdict": _latest_verdict_type(mem.record(h.id)),
+            "x": x,
+            "y": y,
+        }
+        for h, (x, y) in zip(hyps, coords)
+    ]
+    return {"categories": view.coverage(), "whitespace": view.whitespace(), "points": points}
+
+
+@app.get("/api/verdicts")
+def recent_verdicts(limit: int = 20) -> dict:
+    mem = get_memory()
+    rows = []
+    # ponytail: O(n) walk over record() instead of a repo method — works on every
+    # backend; add recent_verdicts() to the repos when the map outgrows a scan.
+    for h in mem.list_hypotheses():
+        rec = mem.record(h.id)
+        exps = {e["id"]: e for e in rec["experiments"]}
+        scs = {sc["experiment_id"]: sc for sc in rec["scorecards"]}
+        for v in rec["verdicts"]:
+            exp = exps.get(v["experiment_id"], {})
+            sc = scs.get(v["experiment_id"], {})
+            rows.append({
+                "hypothesis_id": h.id,
+                "claim": h.claim,
+                "type": v["type"],
+                "reasons": v["reasons"],
+                "created_at": v["created_at"],
+                "profit_factor": exp.get("raw_metrics", {}).get("profit_factor"),
+                "deflated_sharpe": sc.get("deflated_sharpe"),
+            })
+    rows.sort(key=lambda r: r["created_at"], reverse=True)
+    return {"verdicts": rows[:limit]}
+
+
+@app.get("/api/timeline")
+def get_timeline(hypothesis_id: str) -> dict:
+    rec = get_memory().record(hypothesis_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="hypothesis not found")
+    scs = {sc["experiment_id"]: sc for sc in rec["scorecards"]}
+    vds = {v["experiment_id"]: v for v in rec["verdicts"]}
+    experiments = [
+        {
+            "profit_factor": e["raw_metrics"].get("profit_factor"),
+            "deflated_sharpe": scs.get(e["id"], {}).get("deflated_sharpe"),
+            "robustness": scs.get(e["id"], {}).get("robustness"),
+            "verdict": vds.get(e["id"], {}).get("type"),
+        }
+        for e in sorted(rec["experiments"], key=lambda e: e["created_at"])
+    ]
+    return {"experiments": experiments}
