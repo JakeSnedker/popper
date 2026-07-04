@@ -1,9 +1,8 @@
 # DSL v0.3 — Exit Vocabulary & Layered Falsification (PROPOSAL)
 
-**Status:** proposal for red-pen. Decisions locked with Jake 2026-07-04.
-Assumptions I chose (yours to strike) are marked **⟨A⟩**. Nothing is built yet —
-this is the contract all three implementations (Popper compiler, Forge Pine,
-Forge MQL5) will read.
+**Status:** ✅ **LOCKED 2026-07-04** (red-penned by Jake). This is the contract
+all three implementations (Popper compiler, Forge Pine, Forge MQL5) read. Build
+order at the end of the doc.
 
 ---
 
@@ -72,11 +71,18 @@ twin (§10).
 |---------------|--------------------------------------|------|
 | `atr_distance` | `mult × ATR(14)` from entry | either (risk-relative) |
 | `prior_fractal_hi` / `_lo` | last confirmed up/down fractal (Bill Williams, needs 2 bars right → lag) | hi=TP-long/SL-short, lo=SL-long/TP-short |
-| `prior_swing_wick_hi` / `_lo` | rolling max(`high`) / min(`low`) over N prior bars ⟨A⟩ N=20 | as above |
+| `prior_swing_wick_hi` / `_lo` | rolling max(`high`) / min(`low`) over N prior bars — **N=20 (placeholder, see below)** | as above |
 | `prior_swing_body_hi` / `_lo` | rolling max(`max(open,close)`) / min(`min(open,close)`) over N | as above |
 | `session_hi` / `_lo` | high / low of the prior completed session (Asia/Ldn/NY) | as above |
 | `bb_line` | Bollinger mid = SMA(20) (already exists) | either |
-| `stdev_band` | `close ± k × rolling stdev(N)` ⟨A⟩ k=2, N=20 | ± side |
+| `stdev_band` | `close ± k × rolling stdev(N)` — **deferred to wave 2** (not in first-pass) | ± side |
+
+**On the swing lookback `N` (Jake):** `N` is itself strategy-defining — JJC tested
+three (most-recent structure ≈ native, ~15m-equivalent, ~4h-equivalent). We do
+**not** bake that in now. `N=20` is a deliberate placeholder for the first pass;
+**wave 2** promotes the structural lookback to a swept multi-timeframe axis
+(recent / ~15m / ~4h) so the falsifier can find which structural horizon an alpha
+keys off — without tripling the first-pass grid today.
 
 `± offset` (spread/points) is applied to any level anchor (e.g. fractal − spread
 for a long stop just under structure).
@@ -112,10 +118,10 @@ Not in first-pass. Added to survivors during refinement: `trail` families
 
 Curated, JJC-foundation-sized. Runs **only on Layer-1 survivors**.
 
-- **SL (3):** `atr(mult=1.5)` ⟨A⟩ · `level(prior_swing_wick_lo)` · `level(prior_fractal_lo, −spread)`
+- **SL (3):** `atr(mult=1.5)` · `level(prior_swing_wick_lo)` · `level(prior_fractal_lo, −spread)`
 - **TP — ratio family (7 RR):** `{0.5, 1, 2, 3, 5, 8, 10}` R
-- **TP — structural family (3):** `level(prior_swing_wick_hi)` · `level(session_hi)` · `level(stdev_band+)`
-- **Cross:** 3 SL × (7 + 3) TP = **30 combos** first-pass (< the 48 cap).
+- **TP — structural family (2):** `level(prior_swing_wick_hi)` · `level(session_hi)`  *(stdev_band deferred)*
+- **Cross:** 3 SL × (7 + 2) TP = **27 combos** first-pass (< the 48 cap).
 - **Default vs override:** the menu is the default; an alpha **may** declare its
   own exit thesis and skip the menu when its mechanism demands it (e.g. FVG-fill
   → TP at the gap). *(Decision 4.)*
@@ -216,14 +222,15 @@ frame first.
 
 ---
 
-## 12. Red-pen list (the ⟨A⟩ assumptions)
+## 12. Red-pen resolutions (LOCKED)
 
-- Layer-1 horizons `{3,10,20,60}` and pass rule (`t≥2`, consistent sign).
-- Swing lookback `N=20`; stdev `k=2, N=20`.
-- First-pass SL set (which 3) and structural-TP set (which 3).
-- RR grid `{0.5,1,2,3,5,8,10}`.
-- Categorical-param mechanism (`exit_menu` vs categorical `param_space`).
-- Fractal definition (Bill Williams 5-bar vs simpler pivot) and its right-lag.
+- Layer-1 horizons `{3,10,20,60}`, pass = consistent favourable sign with `t≥2` on the majority. ✅
+- Swing lookback **N=20 placeholder**; multi-timeframe lookback → wave 2 (§4a note). ✅
+- First-pass SL = `atr(1.5)` · `swing_wick_lo` · `fractal_lo −spread`. ✅
+- First-pass structural TP = `swing_wick_hi` · `session_hi`; **stdev_band deferred**. ✅
+- RR grid `{0.5,1,2,3,5,8,10}`. ✅
+- Fractal = **Bill Williams 5-bar** (2 bars each side; confirms with a right-lag — keeps it causal). ✅
+- Categorical-param mechanism (`exit_menu` vs categorical `param_space`) — settled at build time (implementation detail). ⏳
 
-Mark these up and I'll lock v0.3, then build: schema → compiler + level-features
-→ prefix-invariance tests → Layer-1 gate → staged menu → Forge twins.
+**Build order:** schema → level-features (pure, causality-tested) → compiler wiring
+→ validator (mandatory-exit + side rules) → Layer-1 gate → staged menu → Forge twins.
