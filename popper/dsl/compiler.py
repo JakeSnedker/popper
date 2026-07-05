@@ -9,6 +9,13 @@ event-driven over the bars. Timing model (no look-ahead):
     at the open; trail/break-even update AFTER exit checks, from that
     bar's data, so they only tighten the following bars.
 
+v0.3 (docs/DSL_v0.3_EXIT_SPEC.md §4): stops/targets may anchor to a level-
+feature series (PIT-correct by construction — level[i] uses bars <= i-1, all
+complete at bar i's open). stop = level[i] + offset; target = level[i] + offset.
+GUARD: an entry whose anchor is NaN, or whose level sits on the wrong side of
+entry (stop >= entry for a long, target <= entry, mirrored for shorts), is
+SKIPPED — an incoherent trade is never opened.
+
 compile_to_sim / compile_to_live are later phases.
 """
 
@@ -20,6 +27,7 @@ import pandas as pd
 from popper.artifacts.strategy_spec import StrategySpec
 from popper.dsl.expr import BAR_COLS, eval_signal
 from popper.dsl.features import atr_14, compute_feature
+from popper.dsl.features.levels import compute_level
 from popper.dsl.validator import validate_spec
 
 _PARAM_REF = re.compile(r"^p\[(\w+)\]$")
@@ -29,6 +37,12 @@ def _resolve(value, params: dict) -> float:
     if isinstance(value, str):
         return float(params[_PARAM_REF.match(value).group(1)])
     return float(value)
+
+
+def _resolve_name(value: str, params: dict) -> str:
+    """An anchor is a literal level-feature name or a p[...] categorical ref."""
+    m = _PARAM_REF.match(value)
+    return str(params[m.group(1)]) if m else value
 
 
 class CompiledStrategy:
@@ -69,8 +83,20 @@ class CompiledStrategy:
         days = pd.DatetimeIndex(bars["time"]).date if "time" in bars.columns else np.zeros(len(bars))
 
         w = spec.wrapper
-        sl_mult = _resolve(w.stop.mult, params)
-        rr = _resolve(w.target.ratio, params)
+        # exit resolution (v0.3): atr|level stops, ratio|level targets.
+        # anchor level series precomputed ONCE — already point-in-time correct.
+        sl_mult = stop_lvl = stop_off = None
+        if w.stop.type == "level":
+            stop_lvl = compute_level(_resolve_name(w.stop.anchor, params), bars).to_numpy()
+            stop_off = _resolve(w.stop.offset, params)
+        else:
+            sl_mult = _resolve(w.stop.mult, params)
+        rr = tgt_lvl = tgt_off = None
+        if w.target.type == "level":
+            tgt_lvl = compute_level(_resolve_name(w.target.anchor, params), bars).to_numpy()
+            tgt_off = _resolve(w.target.offset, params)
+        else:
+            rr = _resolve(w.target.ratio, params)
         trail_mult = _resolve(w.trail.mult, params) if w.trail.type == "atr" else None
         be_trigger = _resolve(w.break_even.trigger_r, params) if w.break_even.type == "after_r" else None
         risk_frac = w.sizing.risk_pct / 100.0
@@ -99,14 +125,30 @@ class CompiledStrategy:
 
         for i in range(len(bars)):
             # 1) open a pending entry at this bar's open
-            if pos == 0 and pending != 0 and not np.isnan(pending_atr) and pending_atr > 0:
+            if pos == 0 and pending != 0:
                 d = days[i]
                 if max_per_day is None or day_trades.get(d, 0) < max_per_day:
-                    pos, entry, entry_i = pending, o[i], i
-                    risk = sl_mult * pending_atr
-                    stop = entry - pos * risk
-                    target = entry + pos * rr * risk
-                    day_trades[d] = day_trades.get(d, 0) + 1
+                    e = o[i]
+                    # stop price — atr distance or structural level ± offset
+                    if sl_mult is not None:
+                        s = (e - pending * sl_mult * pending_atr
+                             if not np.isnan(pending_atr) and pending_atr > 0 else np.nan)
+                    else:
+                        s = stop_lvl[i] + stop_off
+                    # GUARD: skip incoherent entries — NaN anchor (level not
+                    # formed yet) or a stop on the wrong side of entry
+                    ok = not np.isnan(s) and (s < e if pending == 1 else s > e)
+                    if ok:
+                        r_ = abs(e - s)
+                        if rr is not None:
+                            tp = e + pending * rr * r_
+                        else:
+                            tp = tgt_lvl[i] + tgt_off
+                            # GUARD: target must sit on the profit side of entry
+                            ok = not np.isnan(tp) and (tp > e if pending == 1 else tp < e)
+                        if ok and r_ > 0:
+                            pos, entry, entry_i, risk, stop, target = pending, e, i, r_, s, tp
+                            day_trades[d] = day_trades.get(d, 0) + 1
             pending = 0
 
             # 2) manage an open position: stop first (conservative), then target
