@@ -24,6 +24,7 @@ for offline tests; with neither, both layers record themselves as skipped and
 gates 0-4 behave exactly as v0.2.
 """
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import product
@@ -83,6 +84,7 @@ class GauntletConfig:
     n_slices: int = 8          # CSCV time-slices for PBO
     mc_sims: int = 2000
     max_grid: int = 48         # DECISION: cap combos so the loop stays tractable
+    exit_menu: bool = False    # v0.3 §5: run the staged first-pass SL×TP menu (Layer 2)
     thresholds: Thresholds = None
 
     def __post_init__(self):
@@ -182,6 +184,68 @@ def _signal_edge(spec, bars) -> dict:
             "n_signals": n_signals, "passed": passed, "reason": reason}
 
 
+# --- LAYER 2 (v0.3 §5): the first-pass exit menu ---
+# 3 SL × (7 ratio RR + 2 structural TP) = 27 configs. Long-oriented anchors, but
+# direction-SAFE: the compiler skips a level exit that lands on the wrong side of
+# entry, so a short alpha naturally selects the atr/ratio configs (which are
+# direction-agnostic). ponytail: structural exits for shorts (hi-anchored stops)
+# need the M2 side-rule made direction-aware — wave 2. Also: `-spread` offset on
+# the fractal stop is deferred (offset=0 keeps it scale-safe for now).
+_MENU_SL = [
+    ("atr1.5", StopRule(type="atr", mult=1.5)),
+    ("swing_lo", StopRule(type="level", anchor="prior_swing_wick_lo")),
+    ("fractal_lo", StopRule(type="level", anchor="prior_fractal_lo")),
+]
+_MENU_RR = (0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 10.0)  # spec §5 — coarse, each is a DSR trial
+_MENU_TP = [(f"rr{r}", TargetRule(type="ratio", ratio=r)) for r in _MENU_RR] + [
+    ("swing_hi", TargetRule(type="level", anchor="prior_swing_wick_hi")),
+    ("session_hi", TargetRule(type="level", anchor="session_ny_hi")),
+]
+
+
+_PARAM_REF_RE = re.compile(r"p\[(\w+)\]")
+
+
+def _exit_menu() -> list[tuple[str, StopRule, TargetRule]]:
+    return [(f"{sl}/{tp}", s, t) for sl, s in _MENU_SL for tp, t in _MENU_TP]
+
+
+def _menu_variant(spec, stop: StopRule, tgt: TargetRule):
+    """Swap the wrapper's stop/target for a menu config and PRUNE param_space keys
+    that only the old exit referenced (the menu owns the exit now) — otherwise the
+    orphaned p[...] entries fail validation."""
+    w = spec.wrapper.model_copy(update={"stop": stop, "target": tgt})
+    fields = [spec.alpha.signal, spec.alpha.signal_short or "",
+              *(str(x) for x in (w.stop.mult, w.stop.offset, w.target.ratio, w.target.offset,
+                                 w.trail.mult, w.break_even.trigger_r) if isinstance(x, str))]
+    refs = set(_PARAM_REF_RE.findall(" ".join(fields)))
+    ps = {k: v for k, v in spec.param_space.items() if k in refs}
+    return spec.model_copy(update={"id": spec.id, "wrapper": w, "param_space": ps})
+
+
+def _select_exit_config(spec, run_fn, period):
+    """Run the alpha across the 27-config menu (one full-period backtest each) and
+    return (best-config spec variant, diagnostics, n_configs). Best = highest
+    expected edge (PF-1)×trades — opportunity-aware, so it discovers the alpha's
+    natural exit regime (a runner vs a scalp) instead of assuming one."""
+    ranked = []
+    best = None  # (edge, label, variant)
+    for label, stop, tgt in _exit_menu():
+        variant = _menu_variant(spec, stop, tgt)
+        exp = run_fn(variant, period=period, params=None)
+        edge = round(calculate_edge(_pf(exp), exp.trades_n), 2)
+        ranked.append((edge, label, exp.trades_n))
+        if best is None or edge > best[0]:
+            best = (edge, label, variant)
+    ranked.sort(reverse=True)
+    diag = {
+        "n_configs": len(ranked), "best": best[1], "best_edge": best[0],
+        "ranked": [{"config": l, "edge": e, "trades": n} for e, l, n in ranked[:5]],
+        "passed": True,
+    }
+    return best[2], diag, len(ranked)
+
+
 def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
           cfg: GauntletConfig | None = None, mem=None, bars=None) -> tuple[Scorecard, Verdict]:
     """Run the gauntlet. Returns (Scorecard, Verdict). If `mem`, persists the
@@ -203,12 +267,19 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
         period = (bars["time"].iloc[0].date().isoformat(), bars["time"].iloc[-1].date().isoformat())
     start, end = period
     grid = _grid(spec, cfg.max_grid)
+    n_menu = 1  # exit-menu breadth → inflates the DSR trial count (v0.3 §6)
 
-    # anchor experiment: full-period run at default params
+    # anchor experiment: full-period run at default params. Stored LAZILY so the
+    # Layer-2 menu can rebind the spec first — the persisted experiment then
+    # reflects the CHOSEN exit config, not the pre-menu default.
     full = run_fn(spec, period=period, params=None)
-    if mem is not None and full.id is None:
-        full = mem.add_experiment(full)
-    exp_id = full.id or ""
+    exp_id = ""
+
+    def _store_anchor():
+        nonlocal full, exp_id
+        if mem is not None and full.id is None:
+            full = mem.add_experiment(full)
+        exp_id = full.id or ""
 
     def scorecard(robustness, param_stability, dsr, pbo) -> Scorecard:
         return Scorecard(
@@ -231,9 +302,19 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
         diag["gate_signal_edge"] = se
         if not se["passed"]:
             reasons.append(f"no signal edge: {se['reason']}")
+            _store_anchor()
             return verdict(VerdictType.KILL, scorecard(0, 0, 0, 1.0))
     else:
         diag["gate_signal_edge"] = {"passed": None, "skipped": "no bars (injected run_fn)"}
+
+    # --- LAYER 2 (v0.3 §5): staged first-pass exit menu on Layer-1 survivors.
+    # Picks the alpha's best exit config; the breadth inflates DSR n_trials. ---
+    if cfg.exit_menu:
+        spec, diag["exit_menu"], n_menu = _select_exit_config(spec, run_fn, period)
+        grid = _grid(spec, cfg.max_grid)  # exit params pruned → re-derive the grid
+        full = run_fn(spec, period=period, params=None)  # anchor = the chosen config
+
+    _store_anchor()
 
     # --- GATE 0: leakage / look-ahead ---
     leaked = _detect_lookahead(spec, start, end, run_fn)
@@ -325,7 +406,8 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
     # per-combo Sharpe dispersion feeds the DSR benchmark (breadth of the search)
     combo_sharpes = [_sharpe_of(run_fn(spec, period=period, params=c)) for c in grid]
     sr_std = pstdev(combo_sharpes) if len(combo_sharpes) > 1 else 0.0
-    dsr = deflated_sharpe(fwd_trades, n_trials=max(len(grid), 1), sr_std=sr_std)
+    n_trials = max(len(grid) * n_menu, 1)  # v0.3 §6: menu breadth raises the bar
+    dsr = deflated_sharpe(fwd_trades, n_trials=n_trials, sr_std=sr_std)
 
     n_before = len(reasons)
     if pbo > t.max_pbo:
@@ -335,7 +417,7 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
     diag["gate4_multiple_testing"] = {
         "pbo": round(pbo, 4), "max_pbo": t.max_pbo,
         "dsr": round(dsr, 4), "min_deflated_sharpe": t.min_deflated_sharpe,
-        "sr_std": round(sr_std, 4), "n_trials": max(len(grid), 1),
+        "sr_std": round(sr_std, 4), "n_trials": n_trials,
         "passed": len(reasons) == n_before,
     }
 
