@@ -67,10 +67,15 @@ def _research(argv: list[str]) -> None:
 
     p = argparse.ArgumentParser(prog="popper research", description="Unattended Director research loop.")
     p.add_argument("--iterations", type=int, default=10, help="loop iterations (default 10)")
+    p.add_argument("--no-exit-menu", action="store_true", help="skip the v0.3 exit-menu search")
     a = p.parse_args(argv)
 
+    from popper.falsify import GauntletConfig
     from popper.orchestrator import run_research
-    _print_run(run_research(iterations=a.iterations))
+    # v0.3 §5: autonomous discovery runs the staged exit menu by default (agents
+    # propose alphas; the gauntlet searches each one's exit). --no-exit-menu opts out.
+    cfg = GauntletConfig(exit_menu=not a.no_exit_menu)
+    _print_run(run_research(iterations=a.iterations, cfg=cfg))
 
 
 def _print_run(s) -> None:
