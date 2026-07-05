@@ -1,8 +1,15 @@
-"""The Falsification Gauntlet v0 (spec/03).
+"""The Falsification Gauntlet v0 (spec/03) + DSL v0.3 layered falsification
+(docs/DSL_v0.3_EXIT_SPEC.md — predict -> harvest -> prove).
 
 judge(spec) runs the gates fail-fast (cheapest first) over the Phase-2 runner
 and emits a Scorecard + Verdict (SURVIVE | KILL(reasons) | PROMOTE):
 
+  L1. signal edge  — exit-neutral forward-return gate over time horizons
+                     {3,10,20,60} bars (spec §3). Hard KILL before anything
+                     expensive if the entry predicts nothing.
+  L2. exit menu    — staged first-pass SL x TP menu (27 configs, spec §5) on
+                     Layer-1 survivors; the best-edge config carries into the
+                     gates below, and the menu breadth inflates DSR n_trials.
   0. leakage       — look-ahead detector (future-perturbation) + purged/embargoed CV
   1. walk-forward  — anchored OOS windows (JJC calculate_windows, adapted to our dates)
   2. robustness    — param-neighbourhood stability (PF dispersion, profitable fraction)
@@ -11,17 +18,25 @@ and emits a Scorecard + Verdict (SURVIVE | KILL(reasons) | PROMOTE):
 
 Gate thresholds are PORTED from the JJC PassFailCriteria. The runner is
 injectable (`run_fn`) so the gauntlet's decision logic is testable with
-controlled data; the default is the real US30 Phase-2 runner.
+controlled data; the default is the real US30 Phase-2 runner. Layer 1/2 need
+raw bars: they are auto-loaded for the real runner, or injected via `bars=`
+for offline tests; with neither, both layers record themselves as skipped and
+gates 0-4 behave exactly as v0.2.
 """
 
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import product
+from math import sqrt
 from statistics import mean, pstdev
 
+import numpy as np
+
 from popper.artifacts import Scorecard, Verdict, VerdictType
+from popper.artifacts.strategy_spec import StopRule, TargetRule
 from popper.data import load_bars
 from popper.dsl import compile_to_backtest
+from popper.dsl.expr import eval_signal
 from popper.experiments import run
 from popper.falsify.stats import (
     calculate_edge,
@@ -30,6 +45,10 @@ from popper.falsify.stats import (
     pbo_cscv,
     purged_kfold,
 )
+
+L1_HORIZONS = (3, 10, 20, 60)  # spec §3: M5 ~15m / 50m / ~1.5h / 5h
+L1_MIN_T = 2.0                 # min t-stat, required on the majority of horizons
+L1_MIN_SIGNALS = 30            # fewer firings than this = no evidence of edge
 
 
 # --- ported PassFailCriteria (walk_forward_config.py) ---
@@ -118,20 +137,69 @@ def _trades_r(exp) -> list[float]:
     return [t["pnl_r"] for t in exp.raw_metrics.get("trades", [])]
 
 
+def _signal_edge(spec, bars) -> dict:
+    """Layer-1 signal-edge gate (spec §3): exit-neutral. Sign-adjusted forward
+    close-to-close return over L1_HORIZONS on bars where the compiled signal
+    fires. Pass = favourable (positive) mean on EVERY horizon AND t >= 2 on the
+    majority. A real edge decays across horizons; a fluke flips sign."""
+    bt = compile_to_backtest(spec)
+    params = bt.default_params()
+    env = bt._env(bars)
+    long_sig = eval_signal(spec.alpha.signal, env, params).to_numpy()
+    short_sig = (eval_signal(spec.alpha.signal_short, env, params).to_numpy()
+                 if spec.alpha.signal_short else np.zeros(len(bars), dtype=bool))
+    d = np.where(long_sig, 1.0, np.where(short_sig, -1.0, 0.0))  # long precedence, as the compiler
+    c = bars["close"].to_numpy(dtype=float)
+
+    horizons, n_fav, n_t_ok = {}, 0, 0
+    for h in L1_HORIZONS:
+        if len(c) <= h:
+            horizons[h] = {"n": 0, "mean": 0.0, "t": 0.0}
+            continue
+        fwd = (c[h:] - c[:-h]) / c[:-h]
+        mask = d[:-h] != 0
+        r = fwd[mask] * d[:-h][mask]  # sign-adjusted: shorts favour falling prices
+        n = len(r)
+        mu = float(r.mean()) if n else 0.0
+        sd = float(r.std(ddof=1)) if n > 1 else 0.0
+        tstat = mu / (sd / sqrt(n)) if n > 1 and sd > 0 else 0.0
+        horizons[h] = {"n": n, "mean": round(mu, 8), "t": round(tstat, 3)}
+        n_fav += mu > 0
+        n_t_ok += tstat >= L1_MIN_T
+
+    n_signals = int((d != 0).sum())
+    if n_signals < L1_MIN_SIGNALS:
+        passed, reason = False, f"signal fires only {n_signals}x < {L1_MIN_SIGNALS} (no evidence)"
+    elif n_fav < len(L1_HORIZONS):
+        passed = False
+        reason = f"forward return favourable on {n_fav}/{len(L1_HORIZONS)} horizons (needs all)"
+    elif n_t_ok <= len(L1_HORIZONS) // 2:
+        passed = False
+        reason = f"t >= {L1_MIN_T} on only {n_t_ok}/{len(L1_HORIZONS)} horizons (needs majority)"
+    else:
+        passed, reason = True, ""
+    return {"horizons": {str(h): v for h, v in horizons.items()},
+            "n_signals": n_signals, "passed": passed, "reason": reason}
+
+
 def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
-          cfg: GauntletConfig | None = None, mem=None) -> tuple[Scorecard, Verdict]:
+          cfg: GauntletConfig | None = None, mem=None, bars=None) -> tuple[Scorecard, Verdict]:
     """Run the gauntlet. Returns (Scorecard, Verdict). If `mem`, persists the
     full-period anchor experiment (its id anchors experiment_id on both).
     Scorecard/Verdict persistence is the caller's job — the research loop
-    completes the map-derived fields (novelty/correlation/...) before storing."""
+    completes the map-derived fields (novelty/correlation/...) before storing.
+    `bars` feeds the Layer-1/Layer-2 stages; auto-loaded for the real runner,
+    injectable for offline tests, and both stages skip cleanly without it."""
     cfg = cfg or GauntletConfig()
     t = cfg.thresholds
     reasons: list[str] = []
     diag: dict = {}  # per-gate glass box — every computed value + its threshold
 
-    # discover the data period if not supplied
+    # bars power Layer 1/2 and period discovery; only the real runner can load them
+    if bars is None and (period is None or run_fn is run):
+        s_, e_ = period or (None, None)
+        bars = load_bars(spec.context.universe[0], _mt5_tf(spec.context.timeframe), s_, e_)
     if period is None:
-        bars = load_bars(spec.context.universe[0], _mt5_tf(spec.context.timeframe))
         period = (bars["time"].iloc[0].date().isoformat(), bars["time"].iloc[-1].date().isoformat())
     start, end = period
     grid = _grid(spec, cfg.max_grid)
@@ -155,6 +223,17 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
     def verdict(vtype, sc) -> tuple[Scorecard, Verdict]:
         v = Verdict(hypothesis_id=spec.hypothesis_id, experiment_id=exp_id, type=vtype, reasons=reasons)
         return sc, v
+
+    # --- LAYER 1 (v0.3 §3): signal-edge gate — exit-neutral, kills junk before
+    # anything expensive. Skipped (recorded) when no bars are available. ---
+    if bars is not None:
+        se = _signal_edge(spec, bars)
+        diag["gate_signal_edge"] = se
+        if not se["passed"]:
+            reasons.append(f"no signal edge: {se['reason']}")
+            return verdict(VerdictType.KILL, scorecard(0, 0, 0, 1.0))
+    else:
+        diag["gate_signal_edge"] = {"passed": None, "skipped": "no bars (injected run_fn)"}
 
     # --- GATE 0: leakage / look-ahead ---
     leaked = _detect_lookahead(spec, start, end, run_fn)

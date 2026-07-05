@@ -12,8 +12,8 @@ from popper.memory import LocalEmbedder
 from popper.memory.sqlite_repo import SqliteMemory
 from popper.research import run_loop
 
-ALL_GATES = {"gate0_leakage", "gate1_walkforward", "gate2_robustness",
-             "gate3_mc_ruin", "gate4_multiple_testing"}
+ALL_GATES = {"gate_signal_edge", "gate0_leakage", "gate1_walkforward",
+             "gate2_robustness", "gate3_mc_ruin", "gate4_multiple_testing"}
 
 
 def _trend_bars():
@@ -38,7 +38,8 @@ def test_diagnostics_all_gates_and_persistence(tmp_path):
     mem = SqliteMemory(str(tmp_path / "t.db"), embedder=LocalEmbedder())
     f = tmp_path / "h.yaml"
     f.write_text(HYP_YAML, encoding="utf-8")
-    s = run_loop(f, period=(START, END), cfg=_cfg(), mem=mem, run_fn=_run_fn_over(_trend_bars()))
+    tb = _trend_bars()
+    s = run_loop(f, period=(START, END), cfg=_cfg(), mem=mem, run_fn=_run_fn_over(tb), bars=tb)
 
     d = mem.record(s["hypothesis_id"])["scorecards"][0]["diagnostics"]  # reloaded from sqlite
     assert set(d) == ALL_GATES
