@@ -13,7 +13,7 @@ string like "p[sl_atr]" resolved at compile time from param_space.
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # a literal value or a "p[name]" reference into param_space
 Param = float | str
@@ -36,13 +36,28 @@ class EntryRule(BaseModel):
 
 
 class StopRule(BaseModel):
-    type: Literal["atr"] = "atr"
-    mult: Param = 2.0
+    """v0.3 (docs/DSL_v0.3_EXIT_SPEC.md §8): `atr` distance (v0.2 behaviour) or a
+    structural `level` — anchor names a LOSS-SIDE level-feature, ± offset points."""
+
+    type: Literal["atr", "level"] = "atr"
+    mult: Param = 2.0  # type=atr
+    anchor: str | None = None  # type=level -> a loss-side LEVEL_FEATURE
+    offset: Param = 0.0  # ± points/spread applied to the anchor
 
 
 class TargetRule(BaseModel):
-    type: Literal["rr"] = "rr"
-    ratio: Param = 2.0
+    """v0.3: `ratio` (R-multiple — RR is the swept family) or a structural `level`
+    (profit-side anchor — RR is emergent, recorded per trade, not swept)."""
+
+    type: Literal["ratio", "level"] = "ratio"
+    ratio: Param = 2.0  # type=ratio -> the RR sweep family
+    anchor: str | None = None  # type=level -> a profit-side LEVEL_FEATURE
+    offset: Param = 0.0
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _v02_rr_alias(cls, v):
+        return "ratio" if v == "rr" else v  # v0.2 specs stay valid
 
 
 class TrailRule(BaseModel):
@@ -91,7 +106,7 @@ class Context(BaseModel):
 class StrategySpec(BaseModel):
     id: str | None = None  # assigned by alpha memory as S-#### if absent
     hypothesis_id: str
-    dsl_version: str = "0.2"
+    dsl_version: str = "0.3"
     name: str
     alpha: Alpha
     wrapper: Wrapper = Field(default_factory=Wrapper)
