@@ -140,6 +140,8 @@ def evaluate(
             "correlation": sc.correlation,
             "n_trades": m.get("trades_n", 0),
             "profit_factor": pf,
+            "expectancy": m.get("expectancy", 0.0),
+            "expectancy_net": m.get("expectancy_net"),  # None unless a cost model ran
             "expected_edge": round(calculate_edge(min(pf, 5.0), m.get("trades_n", 0)), 2),
         },
     }

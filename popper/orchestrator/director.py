@@ -18,6 +18,7 @@ Substrate: plain asyncio + the artifact contracts — no framework (spec DECISIO
 import asyncio
 import uuid
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 from popper.agents import propose, screen, synthesize, view
 from popper.artifacts import StrategySpec
@@ -27,11 +28,37 @@ from popper.feature_gaps import record_feature_gaps
 from popper.falsify import GauntletConfig
 from popper.memory import complete_scorecard, get_memory
 from popper.memory.map import edge_type
+from popper.orchestrator.convergence import cluster_status, update_cluster
+from popper.orchestrator.selection import rank_targets
 from popper.research import anchor_experiment, evaluate
 
 DEFAULT_BUDGET = {"exploit": 0.70, "explore": 0.20, "wildcard": 0.10}
-K_DEAD = 2          # a category KILLing K times with no survivor is pruned dead
+K_DEAD = 2          # a category KILLing K times with no survivor is pruned dead (explore-side)
+SHELVE_AFTER = 2    # consecutive non-improving optimizer runs => cluster converged
 SURVIVE = ("survive", "promote")
+
+# explore kill-count must NOT prune a cluster from exploit: a cost-killed near-miss
+# is a rescue target (roadmap B2), so cluster death comes ONLY from exploit
+# convergence (B4), never from the explore-side K_DEAD.
+_NO_KILL_DEATH = 10**9
+
+
+def _candidates(c: dict) -> list:
+    """Refine targets for one category: survivors (tier-0) + captured near-misses."""
+    cands = [{"spec": sp, "metrics": {}, "verdict": "survive"} for sp in c.get("survivors", [])]
+    return cands + c.get("near_misses", [])
+
+
+def _live(categories: dict, cfg) -> list:
+    """Categories still worth an exploit worker: not promoted / shelved / converged-
+    dead, and holding at least one rankable target (survivor or rescuable near-miss)."""
+    live = []
+    for et, c in categories.items():
+        if cluster_status(c, k_dead=_NO_KILL_DEATH, shelve_after=SHELVE_AFTER) != "active":
+            continue
+        if rank_targets(_candidates(c), cfg=cfg, limit=1):
+            live.append(et)
+    return live
 
 
 @dataclass
@@ -138,7 +165,7 @@ def _explore(mem, llm, run_fn, period, cfg, wildcard: bool,
 
 
 def _worker_refine(mem, spec: StrategySpec, run_fn, period, cfg,
-                   run_id: str = "", iteration: int = 0, engine: str = "exploit") -> str:
+                   run_id: str = "", iteration: int = 0, engine: str = "exploit"):
     """A Worker (FULL view — sees its category's results, intentional tunnelling)
     refines one survivor via the guided local optimizer (roadmap B1) and
     re-falsifies. Records a new experiment/scorecard/verdict under the same
@@ -163,7 +190,8 @@ def _worker_refine(mem, spec: StrategySpec, run_fn, period, cfg,
            artifact_ids={"hypothesis_id": variant.hypothesis_id, "spec_id": variant.id,
                          "experiment_id": sc.experiment_id, "verdict_id": v.id},
            payload={"optimizer": history[-1]})
-    return v.type.value
+    # (verdict, optimizer done-entry for B4 convergence, the stored refined variant)
+    return v.type.value, history[-1], variant
 
 
 def _stored_spec(mem, hypothesis_id: str) -> StrategySpec:
@@ -180,24 +208,33 @@ async def _run(mem, llm, run_fn, period, cfg, iterations, budget, run_id: str) -
         s.budget_spent[engine] += 1
         _event(mem, run_id, i, engine, "director", "budget", "ok",
                f"selected {engine} engine", payload={"budget_spent": dict(s.budget_spent)})
-        live = [et for et, c in s.categories.items() if c["survivors"] and not c["dead"]]
+        live = _live(s.categories, cfg)
 
         if engine == "exploit" and live:
-            # Workers fan out, one per live category. ponytail: sqlite ids come from a
-            # COUNT (race-prone under true parallel inserts); safe at 1 worker/category
-            # here — give ids an atomic source before scaling worker fan-out.
+            # Workers fan out, one per live category, each refining that category's
+            # TOP-RANKED target (survivor first, else a rescuable cost-killed/near-miss
+            # edge — roadmap B2). ponytail: sqlite ids come from a COUNT (race-prone
+            # under true parallel inserts); safe at 1 worker/category here.
+            targets = {et: rank_targets(_candidates(s.categories[et]), cfg=cfg, limit=1)[0]["spec"]
+                       for et in live}
             outcomes = await asyncio.gather(*[
-                asyncio.to_thread(_worker_refine, mem, s.categories[et]["survivors"][0],
+                asyncio.to_thread(_worker_refine, mem, targets[et],
                                   run_fn, period, cfg, run_id, i, engine)
                 for et in live], return_exceptions=True)
-            for out in outcomes:
+            for et, out in zip(live, outcomes):
                 if isinstance(out, Exception):
                     s.skipped += 1
                     reason = f"worker failed: {type(out).__name__}: {out}"
                     s.failures.append(reason)
                     _event(mem, run_id, i, engine, "worker", "refine", "error", reason)
                 else:
+                    verdict, done_entry, variant = out
                     s.worker_runs += 1
+                    update_cluster(s.categories[et], verdict, done_entry)  # B4 bookkeeping
+                    if verdict in SURVIVE:
+                        # a rescued/-improved variant becomes a survivor of its category,
+                        # so it's refined further until the optimizer converges (-> shelve)
+                        s.categories[et].setdefault("survivors", []).append(variant)
             continue
 
         # explore, wildcard, or exploit with nothing live yet -> generate a candidate
@@ -221,9 +258,22 @@ async def _run(mem, llm, run_fn, period, cfg, iterations, budget, run_id: str) -
         else:
             s.killed += 1
             cat["kills"] += 1
+            # capture the killed spec as a rescue target — the exploit engine will
+            # re-rank it (cost-killed edges rank high, roadmap B2) and try to recover it.
+            st = res["summary"]["stats"]
+            metrics = {"expectancy": st.get("expectancy", 0.0)}
+            if st.get("expectancy_net") is not None:
+                metrics["expectancy_net"] = st["expectancy_net"]
+            cat.setdefault("near_misses", []).append({
+                "spec": res["spec"], "metrics": metrics,
+                "verdict": res["verdict"], "reasons": res["summary"]["reasons"],
+                # ponytail: SimpleNamespace exposes just the two fields classify() reads;
+                # swap for the real Scorecard if selection ever needs more of it.
+                "scorecard": SimpleNamespace(pbo=st["pbo"], parameter_stability=st["param_stability"]),
+            })
             if cat["kills"] >= K_DEAD and not cat["survivors"]:
-                cat["dead"] = True  # pruned: workers are never allocated here
-                _event(mem, run_id, i, engine, "director", "prune", "ok",
+                cat["dead"] = True  # explore-side prune (no more NEW candidates here);
+                _event(mem, run_id, i, engine, "director", "prune", "ok",  # exploit may still rescue a near-miss
                        f"pruned dead category {res['category']}", payload={"category": res["category"]})
 
     _event(mem, run_id, iterations, "director", "director", "run", "done",
