@@ -110,7 +110,10 @@ def evaluate(
     sc, v = judge(spec, run_fn=run_fn, period=period, cfg=cfg, mem=mem, bars=bars, costs=costs)
 
     exp = anchor_experiment(mem, h.id, sc.experiment_id)
-    complete_scorecard(sc, mem, h, exp)  # novelty/correlation/regime/behaviour in place
+    complete_scorecard(sc, mem, h, exp, bars=bars)  # novelty/correlation/regime/behaviour in place
+    # ponytail: real-regime conditioning fires only when a caller passes bars (offline
+    # runs, manual loop). The real US30 runner loads bars internally, so evaluate's bars
+    # is None there -> crude chunk fallback; thread loaded bars through if that matters.
     sc = mem.add_scorecard(sc)
     v = mem.add_verdict(v)
 

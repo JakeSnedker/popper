@@ -107,12 +107,31 @@ def correlation_to_pool(equity_curve: list[float], pool_curves: list[list[float]
     return round(max(abs(_pearson(mine, _resample(c))) for c in pool_curves), 4)
 
 
-def complete_scorecard(sc, mem, hypothesis, experiment):
+def complete_scorecard(sc, mem, hypothesis, experiment, *, bars=None):
     """Fill the map-derived Scorecard fields in place: novelty (distance to the
     nearest prior alpha), correlation (vs the validated pool), regime_stability,
-    behaviour_signature. Returns the same Scorecard."""
+    behaviour_signature. Returns the same Scorecard.
+
+    bars: optional OHLC DataFrame the trades ran on. When given, regime_stability
+    = 1 - regime_concentration from the REAL vol/trend regime report (C3);
+    without it, the crude temporal-chunk v0 stands. Non-gating either way."""
     sc.novelty = round(mem.novelty(hypothesis), 4)
-    sc.regime_stability = round(regime_stability(_trades_r(experiment)), 4)
+    sc.regime_stability = _regime_stability_score(experiment, bars)
     sc.correlation = correlation_to_pool(experiment.equity_curve, mem.validated_equity_curves())
     sc.behaviour_signature = behaviour_signature(experiment)
     return sc
+
+
+def _regime_stability_score(experiment, bars) -> float:
+    """Real-regime stability when bars are available, crude v0 otherwise."""
+    trades = experiment.raw_metrics.get("trades", [])
+    if bars is not None and trades:
+        try:
+            from popper.falsify.regime_report import regime_report  # local: avoid import cycle
+            conc = regime_report(trades, bars)["summary"]["regime_concentration"]
+            if conc > 0.0:  # 0.0 = no positive bucket -> nothing to spread -> degenerate
+                return round(1.0 - conc, 4)
+        except (KeyError, TypeError):
+            pass  # malformed trades/report -> crude fallback below
+    # ponytail: crude temporal-chunk v0 stays as the no-bars/degenerate fallback
+    return round(regime_stability(_trades_r(experiment)), 4)

@@ -1,9 +1,14 @@
-"""Guided local optimizer for the exploit engine (docs/SELF_LEARNING_ROADMAP.md B1).
+"""Guided local optimizer for the exploit engine (docs/SELF_LEARNING_ROADMAP.md B1/B3).
 
 Coordinate search over a spec's DISCRETE param_space: a move re-centers one
 numeric grid on the adjacent value by shifting the whole grid one local step,
 so the anchor/default param (the grid midpoint) walks the landscape while the
 gauntlet keeps probing a same-sized neighbourhood around it.
+
+STRUCTURAL DEPTH (B3-adjacent): each sweep also tries wrapper-level exit-menu
+variants of the current best — toggle trailing/break-even, step their knobs.
+Refining the SAME alpha with a better wrapper is exploit; `spec.alpha` is
+never touched (changing the alpha is explore's job).
 
 ANTI-OVERFIT GUARD — the point of B1: every candidate is scored by re-running
 the FULL falsification gauntlet (`judge` — walk-forward CV, parameter
@@ -16,6 +21,8 @@ neighbourhood raises the objective but fails the gauntlet and is REJECTED —
 there is no scoring path that bypasses falsification.
 """
 
+from popper.artifacts.strategy_spec import BreakEvenRule, TrailRule
+from popper.dsl import DSLValidationError, validate_spec
 from popper.experiments.runner import run
 from popper.falsify import GauntletConfig
 from popper.falsify.gauntlet import judge
@@ -59,10 +66,62 @@ def _shift(spec, name: str, direction: int):
     return spec.model_copy(update={"id": None, "param_space": ps})
 
 
+def _step_knob(value, direction: int, step: float = 0.5):
+    """One discrete step on a literal numeric wrapper knob. None if the value
+    is a p[...] ref (that's the numeric grid search's job) or would go <= 0."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    new = round(value + direction * step, 10)
+    return new if new > 0 else None
+
+
+def _wrapper_neighbors(spec) -> list[tuple[str, object]]:
+    """Small fixed set of structural exit-menu variants of `spec` — wrapper
+    ONLY, alpha untouched. Returns (move_name, spec) pairs; variants that fail
+    DSL validation are dropped (e.g. toggling off a rule whose knob was the
+    only reference to a param_space grid).
+    ponytail: structural choices are discrete — parameter stability probes the
+    numeric grids AROUND a variant, not the toggle itself; the gauntlet's
+    WF/MC/PBO stages are what falsify a structural move."""
+    w = spec.wrapper
+    cands: list[tuple[str, object]] = []
+
+    def add(name, **fields):
+        cands.append((name, spec.model_copy(
+            update={"id": None, "wrapper": w.model_copy(update=fields)})))
+
+    if w.trail.type == "none":
+        add("trail_on", trail=TrailRule(type="atr", mult=2.0))
+    else:
+        add("trail_off", trail=TrailRule(type="none"))
+        for d, tag in ((1, "trail_mult+"), (-1, "trail_mult-")):
+            m = _step_knob(w.trail.mult, d)
+            if m is not None:
+                add(tag, trail=w.trail.model_copy(update={"mult": m}))
+    if w.break_even.type == "none":
+        add("be_on", break_even=BreakEvenRule(type="after_r", trigger_r=1.0))
+    else:
+        add("be_off", break_even=BreakEvenRule(type="none"))
+        for d, tag in ((1, "be_trigger+"), (-1, "be_trigger-")):
+            r = _step_knob(w.break_even.trigger_r, d)
+            if r is not None:
+                add(tag, break_even=w.break_even.model_copy(update={"trigger_r": r}))
+
+    out = []
+    for name, cand in cands:
+        try:
+            validate_spec(cand)
+        except DSLValidationError:
+            continue  # invalid variant: drop, never crash the search
+        out.append((name, cand))
+    return out
+
+
 def optimize(spec, run_fn=run, period=None, cfg: GauntletConfig | None = None,
-             mem=None, max_iters: int = 12):
-    """Greedy coordinate search around `spec`. Returns
-    (best_spec, best_scorecard, best_verdict, history).
+             mem=None, max_iters: int = 24):
+    """Greedy coordinate search around `spec`: each sweep tries the numeric
+    grid shifts AND the structural wrapper variants (`_wrapper_neighbors`).
+    Returns (best_spec, best_scorecard, best_verdict, history).
 
     Every evaluation = one anchor run (the objective) + one FULL gauntlet
     `judge` (the guard). `mem` is forwarded to judge — leave it None during
@@ -94,6 +153,7 @@ def optimize(spec, run_fn=run, period=None, cfg: GauntletConfig | None = None,
 
     movable = _movable(spec)
     evals, moved = 0, True
+    moves_tried, moves_accepted, move_log = 0, 0, []
     while moved and evals < max_iters:
         moved = False
         for name in movable:
@@ -104,11 +164,13 @@ def optimize(spec, run_fn=run, period=None, cfg: GauntletConfig | None = None,
                 if cand is None:
                     continue
                 evals += 1
+                moves_tried += 1
                 obj, _, sc, v, robust, why = _eval(cand)
                 accepted = robust and obj > best_obj
                 if robust and not accepted:
                     why = f"objective {obj} did not improve on {best_obj}"
-                history.append({"move": f"{name}{'+' if direction > 0 else '-'}",
+                mname = f"{name}{'+' if direction > 0 else '-'}"
+                history.append({"move": mname,
                                 "param": name, "direction": direction,
                                 "param_space": cand.param_space, "objective": obj,
                                 "objective_key": obj_key, "verdict": v.type.value,
@@ -117,8 +179,33 @@ def optimize(spec, run_fn=run, period=None, cfg: GauntletConfig | None = None,
                 if accepted:
                     best, best_obj, best_sc, best_v = cand, obj, sc, v
                     moved = True
+                    moves_accepted += 1
+                    move_log.append(mname)
+        # structural exit-menu moves around the current best: same _eval, same
+        # acceptance rule — the full gauntlet re-clears every candidate.
+        for mname, cand in _wrapper_neighbors(best):
+            if evals >= max_iters:
+                break
+            evals += 1
+            moves_tried += 1
+            obj, _, sc, v, robust, why = _eval(cand)
+            accepted = robust and obj > best_obj
+            if robust and not accepted:
+                why = f"objective {obj} did not improve on {best_obj}"
+            history.append({"move": mname, "structural": True, "objective": obj,
+                            "objective_key": obj_key, "verdict": v.type.value,
+                            "parameter_stability": sc.parameter_stability, "pbo": sc.pbo,
+                            "accepted": accepted, "reason": why})
+            if accepted:
+                best, best_obj, best_sc, best_v = cand, obj, sc, v
+                moved = True
+                moves_accepted += 1
+                move_log.append(mname)
+                break  # ponytail: remaining neighbours came off the old best — rebuild next sweep
 
     history.append({"move": "done", "converged": not moved and evals < max_iters,
                     "evals": evals, "improved": best is not spec,
-                    "objective": best_obj, "objective_key": obj_key})
+                    "objective": best_obj, "objective_key": obj_key,
+                    "moves_tried": moves_tried, "moves_accepted": moves_accepted,
+                    "move_log": move_log})
     return best, best_sc, best_v, history

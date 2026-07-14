@@ -34,13 +34,7 @@ from popper.research import anchor_experiment, evaluate
 
 DEFAULT_BUDGET = {"exploit": 0.70, "explore": 0.20, "wildcard": 0.10}
 K_DEAD = 2          # a category KILLing K times with no survivor is pruned dead (explore-side)
-SHELVE_AFTER = 2    # consecutive non-improving optimizer runs => cluster converged
 SURVIVE = ("survive", "promote")
-
-# explore kill-count must NOT prune a cluster from exploit: a cost-killed near-miss
-# is a rescue target (roadmap B2), so cluster death comes ONLY from exploit
-# convergence (B4), never from the explore-side K_DEAD.
-_NO_KILL_DEATH = 10**9
 
 
 def _candidates(c: dict) -> list:
@@ -49,16 +43,23 @@ def _candidates(c: dict) -> list:
     return cands + c.get("near_misses", [])
 
 
+def _ranked_available(c: dict, cfg) -> list:
+    """Ranked refine targets whose spec has NOT yet been taken to convergence.
+    A refined spec's id lives in c['refined_ids']; a freshly-captured near-miss (new
+    id) is therefore always available — that's what revives a quiet category."""
+    done = c.get("refined_ids", set())
+    return [t for t in rank_targets(_candidates(c), cfg=cfg) if t["spec"].id not in done]
+
+
 def _live(categories: dict, cfg) -> list:
-    """Categories still worth an exploit worker: not promoted / shelved / converged-
-    dead, and holding at least one rankable target (survivor or rescuable near-miss)."""
-    live = []
-    for et, c in categories.items():
-        if cluster_status(c, k_dead=_NO_KILL_DEATH, shelve_after=SHELVE_AFTER) != "active":
-            continue
-        if rank_targets(_candidates(c), cfg=cfg, limit=1):
-            live.append(et)
-    return live
+    """Categories still worth an exploit worker: no keeper has been PROMOTED (locked
+    in), and at least one plausible target (survivor or rescuable near-miss) is still
+    UNREFINED. A category only goes quiet once EVERY alpha it has found is refined —
+    not after an arbitrary kill count — and any new near-miss revives it (B2/B4).
+    ponytail: explore kill-count no longer prunes exploit; a truly-dead category has
+    no rankable target left, so _ranked_available empties out and it drops naturally."""
+    return [et for et, c in categories.items()
+            if cluster_status(c) != "promote" and _ranked_available(c, cfg)]
 
 
 @dataclass
@@ -212,16 +213,18 @@ async def _run(mem, llm, run_fn, period, cfg, iterations, budget, run_id: str) -
 
         if engine == "exploit" and live:
             # Workers fan out, one per live category, each refining that category's
-            # TOP-RANKED target (survivor first, else a rescuable cost-killed/near-miss
-            # edge — roadmap B2). ponytail: sqlite ids come from a COUNT (race-prone
-            # under true parallel inserts); safe at 1 worker/category here.
-            targets = {et: rank_targets(_candidates(s.categories[et]), cfg=cfg, limit=1)[0]["spec"]
-                       for et in live}
+            # TOP-RANKED still-UNREFINED target (survivor first, else a rescuable
+            # cost-killed/near-miss edge — roadmap B2). ponytail: sqlite ids come from a
+            # COUNT (race-prone under true parallel inserts); safe at 1 worker/category.
+            targets = {et: _ranked_available(s.categories[et], cfg)[0]["spec"] for et in live}
             outcomes = await asyncio.gather(*[
                 asyncio.to_thread(_worker_refine, mem, targets[et],
                                   run_fn, period, cfg, run_id, i, engine)
                 for et in live], return_exceptions=True)
             for et, out in zip(live, outcomes):
+                # every ATTEMPTED target is exhausted (its local optimum is deterministic);
+                # don't re-select it — the category stays live only while OTHER/NEW targets remain.
+                s.categories[et].setdefault("refined_ids", set()).add(targets[et].id)
                 if isinstance(out, Exception):
                     s.skipped += 1
                     reason = f"worker failed: {type(out).__name__}: {out}"
@@ -232,8 +235,8 @@ async def _run(mem, llm, run_fn, period, cfg, iterations, budget, run_id: str) -
                     s.worker_runs += 1
                     update_cluster(s.categories[et], verdict, done_entry)  # B4 bookkeeping
                     if verdict in SURVIVE:
-                        # a rescued/-improved variant becomes a survivor of its category,
-                        # so it's refined further until the optimizer converges (-> shelve)
+                        # a rescued/-improved variant is a NEW, unrefined target -> keeps the
+                        # loop going until the optimizer stops producing survivors
                         s.categories[et].setdefault("survivors", []).append(variant)
             continue
 

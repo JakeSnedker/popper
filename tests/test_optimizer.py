@@ -108,3 +108,88 @@ def test_optimizer_prefers_net_of_cost_objective():
     assert hist[0]["objective_key"] == "expectancy_net"
     assert best.param_space["x"] == [1, 2, 3], hist   # followed net, not gross
     assert v.type.value in ("survive", "promote")
+
+
+# --- B3 structural depth: wrapper-level exit-menu moves ---
+
+def _wrapper_run_fn(wins_of):
+    """run_fn stub keyed on the SPEC: wins_of(spec, x) winners of +1R, rest -1R.
+    Lets the landscape depend on the wrapper (trail on/off), not just param x."""
+    def run_fn(spec, period=None, params=None):
+        g = spec.param_space["x"]
+        x = (params or {}).get("x", g[len(g) // 2])
+        w = int(round(wins_of(spec, x)))
+        trades = [{"pnl_r": 1.0}] * w + [{"pnl_r": -1.0}] * (N - w)
+        eq = [1.0]
+        for t in trades:
+            eq.append(eq[-1] * (1 + 0.005 * t["pnl_r"]))
+        m = compute_metrics({"trades": trades, "equity_curve": eq,
+                             "total_return": eq[-1] - 1.0, "n_trades": N})
+        m["trades"] = trades
+        return ExperimentResult(spec_id=spec.id or "", dataset="synth",
+                                period_start=str(period[0]) if period else "",
+                                period_end=str(period[1]) if period else "",
+                                trades_n=N, raw_metrics=m, equity_curve=eq)
+    return run_fn
+
+
+def test_optimizer_accepts_robust_structural_move():
+    # numeric hill already peaks at the anchor (x=3): no grid shift improves.
+    # Turning the ATR trail ON adds 5 winners at every x -> robustly better.
+    wins = lambda spec, x: (36 - abs(x - 3)) + (5 if spec.wrapper.trail.type == "atr" else 0)
+    spec = _spec([2, 3, 4])  # default wrapper: trail none, break_even none
+    best, sc, v, hist = optimize(spec, run_fn=_wrapper_run_fn(wins),
+                                 period=(START, END), cfg=_cfg())
+
+    assert best.wrapper.trail.type == "atr"      # structural move landed
+    assert best.alpha == spec.alpha              # exploit never touches the alpha
+    assert best.param_space == spec.param_space  # ...and this win wasn't a grid shift
+    assert v.type.value in ("survive", "promote"), v.reasons
+
+    done = hist[-1]
+    assert done["improved"] and done["converged"]
+    assert "trail_on" in done["move_log"]
+    assert done["moves_accepted"] == len(done["move_log"]) == 1
+    assert done["objective"] > hist[0]["objective"]
+    # the accepted structural candidate went through the SAME gauntlet guard
+    entry = next(e for e in hist if e.get("move") == "trail_on" and e["accepted"])
+    assert entry["structural"] is True
+    assert entry["verdict"] in ("survive", "promote")
+
+
+def test_optimizer_skips_invalid_structural_variant():
+    # trail mult is a p[tm] grid ref: the trail_off variant orphans param_space
+    # key 'tm' -> DSLValidationError -> dropped, never evaluated, no crash.
+    spec = StrategySpec(
+        hypothesis_id="H-OPT", name="opt_probe",
+        alpha={"features": ["ema_10"], "signal": "close > p[x]"},
+        wrapper={"trail": {"type": "atr", "mult": "p[tm]"}},
+        param_space={"x": [2, 3, 4], "tm": [1.5, 2.0, 2.5]},
+    )
+    flat_hill = lambda spec, x: 36 - abs(x - 3)  # nothing improves anywhere
+    best, sc, v, hist = optimize(spec, run_fn=_wrapper_run_fn(flat_hill),
+                                 period=(START, END), cfg=_cfg())
+
+    assert best is spec
+    assert not any(e.get("move") == "trail_off" for e in hist)      # dropped variant
+    assert not any(e.get("move", "").startswith("trail_mult") for e in hist)  # p[tm] not steppable
+    assert any(e.get("move") == "be_on" for e in hist)              # valid sibling still tried
+    done = hist[-1]
+    assert done["converged"] and not done["improved"]
+
+
+def test_done_entry_contract_and_depth_keys():
+    spec = _spec([2, 3, 4])
+    hill = lambda x: 36 - abs(x - 3)  # anchored at the peak: converge immediately
+    best, sc, v, hist = optimize(spec, run_fn=_run_fn(hill),
+                                 period=(START, END), cfg=_cfg())
+
+    done = hist[-1]
+    assert done["move"] == "done"
+    # Director contract: these keys must survive untouched
+    assert done["converged"] is True and done["improved"] is False
+    assert set(done) >= {"evals", "objective", "objective_key"}
+    # B3 depth instrumentation
+    assert done["moves_tried"] == done["evals"] > 0
+    assert done["moves_accepted"] == 0
+    assert done["move_log"] == []
