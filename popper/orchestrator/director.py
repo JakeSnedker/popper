@@ -78,14 +78,6 @@ def _pick(budget: dict, spent: dict) -> str:
     return max(budget, key=lambda e: budget[e] - spent[e] / total)
 
 
-def _mutate(spec: StrategySpec) -> StrategySpec:
-    """Worker refinement: nudge numeric param grids ±10% (intentional local search).
-    ponytail: a flat param nudge; richer wrapper/param mutation is Jake's to tune."""
-    ps = {k: [round(x * 1.1, 4) for x in g] if all(isinstance(x, (int, float)) for x in g) else g
-          for k, g in spec.param_space.items()}
-    return spec.model_copy(update={"id": None, "param_space": ps, "name": f"{spec.name}_r"})
-
-
 def _explore(mem, llm, run_fn, period, cfg, wildcard: bool,
              run_id: str = "", iteration: int = 0, engine: str = "explore") -> dict:
     """One explore/wildcard candidate through the blind pipeline. Returns a result
@@ -148,13 +140,18 @@ def _explore(mem, llm, run_fn, period, cfg, wildcard: bool,
 def _worker_refine(mem, spec: StrategySpec, run_fn, period, cfg,
                    run_id: str = "", iteration: int = 0, engine: str = "exploit") -> str:
     """A Worker (FULL view — sees its category's results, intentional tunnelling)
-    refines one survivor spec and re-falsifies. Records a new experiment/scorecard/
-    verdict under the same hypothesis; does not mutate the parent's status."""
+    refines one survivor via the guided local optimizer (roadmap B1) and
+    re-falsifies. Records a new experiment/scorecard/verdict under the same
+    hypothesis; does not mutate the parent's status."""
     _event(mem, run_id, iteration, engine, "worker", "refine", "running",
            f"refining survivor spec {spec.id}", artifact_ids={"spec_id": spec.id})
     _ = view("worker", mem)  # the full view is the worker's grant (spec/02); read-through below
-    variant = mem.add_spec(_mutate(spec))
     from popper.falsify import judge  # local import avoids a heavy import at module load
+    from popper.orchestrator.optimizer import optimize
+    best, _, _, history = optimize(spec, run_fn=run_fn, period=period, cfg=cfg)
+    variant = mem.add_spec(best.model_copy(update={"id": None, "name": f"{spec.name}_r"}))
+    # ponytail: one extra judge of the winner so its anchor experiment persists
+    # under the stored variant id (search candidates are judged memory-free)
     sc, v = judge(variant, run_fn=run_fn, period=period, cfg=cfg, mem=mem)
     exp = anchor_experiment(mem, variant.hypothesis_id, sc.experiment_id)
     h = mem.get_hypothesis(variant.hypothesis_id)
@@ -164,7 +161,8 @@ def _worker_refine(mem, spec: StrategySpec, run_fn, period, cfg,
     _event(mem, run_id, iteration, engine, "worker", "refine", v.type.value,
            f"worker variant {variant.id} returned {v.type.value.upper()}",
            artifact_ids={"hypothesis_id": variant.hypothesis_id, "spec_id": variant.id,
-                         "experiment_id": sc.experiment_id, "verdict_id": v.id})
+                         "experiment_id": sc.experiment_id, "verdict_id": v.id},
+           payload={"optimizer": history[-1]})
     return v.type.value
 
 

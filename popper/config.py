@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     # so a human/observability can see the drag.
     # point_value is the CALIBRATION knob: Jake sets it from the fidelity
     # result (MT5 'spread' is in points; point size differs by feed).
-    point_value: float = 0.01
+    # 0.012 = the A1 matched-pair calibration (entry delta +2.53pts = spread ->
+    # pt~=0.011; rounded up, honest/conservative). Override via POPPER_POINT_VALUE.
+    point_value: float = 0.012
     slippage_pts: float = 0.0
     commission_pts: float = 0.0
 
