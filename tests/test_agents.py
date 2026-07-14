@@ -10,6 +10,7 @@ import tempfile
 import pytest
 
 from popper.agents import StubLLM, propose, screen, synthesize, view
+from popper.agents.llm import _extract_text
 from popper.agents.views import BlindView, MapEntry
 from popper.artifacts import (
     ExperimentResult,
@@ -29,6 +30,11 @@ def _mem() -> SqliteMemory:
     return SqliteMemory(os.path.join(tempfile.mkdtemp(), "t.db"), embedder=LocalEmbedder())
 
 
+def test_anthropic_text_extraction_handles_multiple_content_blocks():
+    payload = {"content": [{"type": "thinking", "thinking": "x"}, {"type": "text", "text": "hello"}]}
+    assert _extract_text(payload) == "hello"
+
+
 # --- Hypothesis agent: emits a valid Hypothesis aimed via the blind map ---
 
 def test_hypothesis_agent_emits_hypothesis():
@@ -46,6 +52,40 @@ def test_hypothesis_agent_emits_hypothesis():
     assert llm.calls[0]["model"] == "claude-sonnet-5"  # model split wired
     # the prompt is built from the map only (whitespace listed), never results
     assert "whitespace" in llm.calls[0]["prompt"]
+
+
+def test_hypothesis_agent_repairs_malformed_json():
+    mem = _mem()
+    llm = StubLLM('{"claim": "broken', json.dumps({
+        "claim": "NY session reversals after liquidity sweeps",
+        "mechanism": "stop-run exhaustion",
+        "required_features": ["session_ny", "liquidity_sweep"],
+        "expected_regime": "ranging",
+    }))
+    h = propose(view("hypothesis", mem), llm)
+    assert h.claim.startswith("NY session")
+    assert len(llm.calls) == 2
+    assert "INVALID JSON" in llm.calls[1]["prompt"]
+
+
+def test_hypothesis_agent_repairs_provider_no_text_error():
+    class NoTextThenValid(StubLLM):
+        def complete(self, system, prompt, model, max_tokens=1024):
+            self.calls.append({"system": system, "prompt": prompt, "model": model})
+            if len(self.calls) == 1:
+                raise RuntimeError("Anthropic response contained no text block")
+            return json.dumps({
+                "claim": "London continuation after volatility expansion",
+                "mechanism": "fresh directional flow",
+                "required_features": ["session_london", "atr_14"],
+                "expected_regime": "trending",
+            })
+
+    mem = _mem()
+    llm = NoTextThenValid()
+    h = propose(view("hypothesis", mem), llm)
+    assert h.claim.startswith("London continuation")
+    assert len(llm.calls) == 2
 
 
 # --- DONE-WHEN: Synthesis produces a spec that passes validate_spec, repairing ---

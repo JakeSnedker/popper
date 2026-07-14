@@ -1,7 +1,10 @@
 """FastAPI app serving the dashboard: build phases + the alpha-memory trail."""
 
+from typing import Literal
+
 import numpy as np
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 
 from popper import __version__
@@ -9,8 +12,10 @@ from popper.agents.views import BlindView
 from popper.architecture import architecture
 from popper.artifacts import Hypothesis, HypothesisStatus
 from popper.config import settings
+from popper.falsify import GauntletConfig
 from popper.memory import get_memory
 from popper.memory.map import edge_type
+from popper.orchestrator import run_research
 from popper.phases import PHASES, progress
 
 app = FastAPI(title="Popper API", version=__version__)
@@ -21,6 +26,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class ResearchRunRequest(BaseModel):
+    iterations: int = Field(default=3, ge=1, le=50)
+    signal_edge_mode: Literal["loose", "balanced", "strict"] = "balanced"
+    exit_menu: bool = True
 
 
 @app.get("/api/health")
@@ -41,6 +52,35 @@ def get_architecture() -> dict:
 @app.get("/api/stats")
 def get_stats() -> dict:
     return get_memory().stats()
+
+
+@app.get("/api/feature-gaps")
+def list_feature_gaps(status: str | None = None, limit: int = 20) -> dict:
+    return {"feature_gaps": get_memory().list_feature_gaps(status=status, limit=limit)}
+
+
+@app.post("/api/research")
+def run_research_once(req: ResearchRunRequest) -> dict:
+    cfg = GauntletConfig(exit_menu=req.exit_menu, signal_edge_mode=req.signal_edge_mode)
+    s = run_research(iterations=req.iterations, cfg=cfg)
+    return {
+        "run_id": s.run_id,
+        "iterations": s.iterations,
+        "budget_spent": s.budget_spent,
+        "proposed": s.proposed,
+        "killed": s.killed,
+        "survived": s.survived,
+        "worker_runs": s.worker_runs,
+        "skipped": s.skipped,
+        "failures": s.failures,
+        "survivors": s.survivors,
+        "categories": s.category_report(),
+    }
+
+
+@app.get("/api/research-events")
+def research_events(run_id: str | None = None, limit: int = 100) -> dict:
+    return {"events": get_memory().list_research_events(run_id=run_id, limit=limit)}
 
 
 @app.get("/api/hypotheses")
@@ -78,6 +118,12 @@ def _pca_2d(embeddings: list[list[float]]) -> list[tuple[float, float]]:
         return [(0.0, 0.0)]  # a single point has no spread to project
     centered = x - x.mean(axis=0)
     _, _, vt = np.linalg.svd(centered, full_matrices=False)
+    for i in range(min(2, vt.shape[0])):
+        # SVD component signs are arbitrary; orient each axis by its largest
+        # loading so refreshes don't randomly mirror the map.
+        j = int(np.argmax(np.abs(vt[i])))
+        if vt[i, j] < 0:
+            vt[i] *= -1
     proj = centered @ vt[:2].T
     if proj.shape[1] < 2:  # <2-dim embedding space: pad the missing axis with 0
         proj = np.pad(proj, ((0, 0), (0, 2 - proj.shape[1])))
@@ -134,6 +180,8 @@ def recent_verdicts(limit: int = 20) -> dict:
                 "reasons": v["reasons"],
                 "created_at": v["created_at"],
                 "profit_factor": exp.get("raw_metrics", {}).get("profit_factor"),
+                # informational cost drag — never part of the verdict itself
+                "expectancy_net": exp.get("raw_metrics", {}).get("expectancy_net"),
                 "deflated_sharpe": sc.get("deflated_sharpe"),
             })
     rows.sort(key=lambda r: r["created_at"], reverse=True)

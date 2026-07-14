@@ -65,6 +65,17 @@ def _seed(mem: SqliteMemory) -> dict:
 
     h3 = mem.add_hypothesis(Hypothesis(
         claim="US30 rises on Mondays", mechanism="calendar flow"))  # no verdict yet
+    mem.add_research_event({
+        "run_id": "R-test",
+        "iteration": 1,
+        "engine": "explore",
+        "role": "hypothesis",
+        "stage": "propose",
+        "status": "ok",
+        "message": "seeded trace event",
+        "artifact_ids": {"hypothesis_id": h1.id},
+        "payload": {"novelty": 0.9},
+    })
     return {"h1": h1.id, "h2": h2.id, "h3": h3.id}
 
 
@@ -153,3 +164,12 @@ def test_record_scorecards_carry_diagnostics(client):
     diags = [sc["diagnostics"] for sc in rec["scorecards"]]
     assert all(isinstance(d, dict) for d in diags)
     assert diags[0]["pbo"]["passed"] is False and diags[1]["pbo"]["passed"] is True
+
+
+def test_research_events_endpoint(client):
+    c, ids = client
+    rows = c.get("/api/research-events", params={"run_id": "R-test"}).json()["events"]
+    assert len(rows) == 1
+    assert rows[0]["role"] == "hypothesis"
+    assert rows[0]["artifact_ids"] == {"hypothesis_id": ids["h1"]}
+    assert rows[0]["payload"] == {"novelty": 0.9}

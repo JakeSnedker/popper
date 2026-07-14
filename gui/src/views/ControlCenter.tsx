@@ -1,6 +1,10 @@
+import { useState } from "react";
 import type { Architecture, View } from "../lib/types";
 import { AlphaMap } from "../components/AlphaMap";
+import { FeatureGaps } from "../components/FeatureGaps";
 import { PipelineMap } from "../components/PipelineMap";
+import { ResearchControls } from "../components/ResearchControls";
+import { ResearchTrace } from "../components/ResearchTrace";
 import { VerdictStream } from "../components/VerdictStream";
 
 function ProgressRing({ pct }: { pct: number }) {
@@ -30,6 +34,7 @@ export function ControlCenter({
   onSelectHypothesis: (id: string) => void;
 }) {
   const open = (id: string) => onNavigate({ kind: "subsystem", id });
+  const [activeRunId, setActiveRunId] = useState<string | undefined>();
 
   return (
     <div className="space-y-8 max-w-6xl">
@@ -52,6 +57,18 @@ export function ControlCenter({
           </button>
         </div>
       </div>
+
+      {/* operator controls */}
+      <section className="grid lg:grid-cols-3 gap-4 items-start">
+        <div className="lg:col-span-2">
+          <ResearchControls onRunComplete={setActiveRunId} />
+        </div>
+        <FeatureGaps />
+      </section>
+
+      <section>
+        <ResearchTrace runId={activeRunId} />
+      </section>
 
       {/* alpha map + verdict stream */}
       <section>

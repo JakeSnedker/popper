@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     # agents (Phase 6)
     anthropic_api_key: str = ""
 
+    # default per-trade cost model — INFORMATIONAL, NON-GATING. The gauntlet
+    # judges gross (frictionless) edge; these only feed the *_net raw_metrics
+    # so a human/observability can see the drag.
+    # point_value is the CALIBRATION knob: Jake sets it from the fidelity
+    # result (MT5 'spread' is in points; point size differs by feed).
+    point_value: float = 0.01
+    slippage_pts: float = 0.0
+    commission_pts: float = 0.0
+
     # api
     api_host: str = "127.0.0.1"
     api_port: int = 8000

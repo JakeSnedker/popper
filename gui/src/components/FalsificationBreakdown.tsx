@@ -3,7 +3,17 @@ import type { GateDiag, WalkForwardWindow } from "../lib/types";
 /** Per-gate glass box: renders Scorecard.diagnostics from the Falsification
  * Gauntlet — each gate's measured values vs its threshold, pass/fail. */
 
+const GATE_ORDER = [
+  "gate_signal_edge",
+  "gate0_leakage",
+  "gate1_walkforward",
+  "gate2_robustness",
+  "gate3_mc_ruin",
+  "gate4_multiple_testing",
+];
+
 const GATE_LABELS: Record<string, string> = {
+  gate_signal_edge: "Layer 1 · Signal edge / horizon family",
   gate0_leakage: "Gate 0 · Leakage / look-ahead",
   gate1_walkforward: "Gate 1 · Walk-forward OOS",
   gate2_robustness: "Gate 2 · Parameter robustness",
@@ -193,6 +203,74 @@ function GenericRows({ d }: { d: GateDiag }) {
 
 function GateBody({ name, d }: { name: string; d: GateDiag }) {
   switch (name) {
+    case "gate_signal_edge":
+      return (
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <MetricRow
+              label="Mode"
+              value={d.mode ?? "balanced"}
+              cmp={d.mode === "loose" ? "discovery" : d.mode === "strict" ? "hard" : "default"}
+            />
+            <MetricRow
+              label="Signal count"
+              value={String(d.n_signals ?? "–")}
+              cmp={`≥ ${d.min_signals ?? 30}`}
+              ok={(d.n_signals ?? 0) >= (d.min_signals ?? 30)}
+            />
+          </div>
+          {d.passed_family && (
+            <p className="text-[11px] text-emerald-300 leading-snug">
+              Passing horizon family: {d.passed_family.replace(/_/g, " ")}
+            </p>
+          )}
+          {d.reason && <p className="text-[11px] text-slate-500 leading-snug">{d.reason}</p>}
+          {d.horizon_families && (
+            <div className="grid grid-cols-1 gap-1.5">
+              {Object.entries(d.horizon_families).map(([family, f]) => (
+                <div key={family} className="rounded border border-ink-600 bg-ink-900/50 p-2">
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="text-slate-300">{family.replace(/_/g, " ")} · {f.horizons.join("/")} bars</span>
+                    <PassChip ok={f.passed} />
+                  </div>
+                  <div className="mt-1 grid grid-cols-2 gap-1 text-[11px] font-mono text-slate-500">
+                    <span>favourable {f.favourable}/{f.required_favourable}</span>
+                    <span>t≥{num(f.min_t, 1)} {f.t_ok}/{f.required_t_ok}</span>
+                    <span>avg t {num(f.avg_t, 2)}</span>
+                    <span>required avg t ≥ {num(f.required_avg_t, 2)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {d.horizons && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="text-left text-slate-500 border-b border-ink-600">
+                    <th className="py-1 pr-2 font-medium">Horizon</th>
+                    <th className="py-1 pr-2 font-medium">Signals</th>
+                    <th className="py-1 pr-2 font-medium">Mean fwd return</th>
+                    <th className="py-1 font-medium">t-stat</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(d.horizons)
+                    .sort((a, b) => Number(a[0]) - Number(b[0]))
+                    .map(([h, v]) => (
+                      <tr key={h} className="border-b border-ink-700">
+                        <td className="py-1 pr-2 text-slate-400">{h} bars</td>
+                        <td className="py-1 pr-2 font-mono text-slate-400">{v.n}</td>
+                        <td className={`py-1 pr-2 font-mono ${v.mean > 0 ? "text-emerald-300" : "text-red-300"}`}>{v.mean.toFixed(6)}</td>
+                        <td className={`py-1 font-mono ${v.t >= (d.mode === "loose" ? 1 : 2) ? "text-emerald-300" : "text-slate-400"}`}>{v.t.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      );
     case "gate0_leakage":
       return (
         <p className="text-[11px] text-slate-500 leading-snug">
@@ -297,12 +375,36 @@ function GateBody({ name, d }: { name: string; d: GateDiag }) {
   }
 }
 
+function NotReached({ name }: { name: string }) {
+  return (
+    <div className="card p-3 opacity-60">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-slate-500">
+          {GATE_LABELS[name] ?? name.replace(/_/g, " ")}
+        </span>
+        <span className="pill bg-slate-700/50 text-slate-500">NOT REACHED</span>
+      </div>
+      <p className="text-[11px] text-slate-600 mt-2 leading-snug">
+        Earlier fail-fast gate stopped the gauntlet before this expensive test ran.
+      </p>
+    </div>
+  );
+}
+
 export function FalsificationBreakdown({
   diagnostics,
 }: {
   diagnostics: Record<string, GateDiag>;
 }) {
-  const keys = Object.keys(diagnostics).sort(); // gate0..gate4 sort lexically
+  const present = new Set(Object.keys(diagnostics));
+  const firstFailedIdx = GATE_ORDER.findIndex((k) => diagnostics[k]?.passed === false);
+  const keys = [
+    ...GATE_ORDER.filter((k) => present.has(k)),
+    ...Object.keys(diagnostics).filter((k) => !GATE_ORDER.includes(k)).sort(),
+  ];
+  const notReached = firstFailedIdx >= 0
+    ? GATE_ORDER.slice(firstFailedIdx + 1).filter((k) => !present.has(k))
+    : [];
   if (keys.length === 0)
     return (
       <p className="text-xs text-slate-500 italic">
@@ -322,6 +424,7 @@ export function FalsificationBreakdown({
           <GateBody name={k} d={diagnostics[k]} />
         </div>
       ))}
+      {notReached.map((k) => <NotReached key={k} name={k} />)}
     </div>
   );
 }

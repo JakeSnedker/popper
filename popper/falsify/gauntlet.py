@@ -27,6 +27,7 @@ gates 0-4 behave exactly as v0.2.
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from itertools import product
 from math import sqrt
 from statistics import mean, pstdev
@@ -48,8 +49,20 @@ from popper.falsify.stats import (
 )
 
 L1_HORIZONS = (3, 10, 20, 60)  # spec §3: M5 ~15m / 50m / ~1.5h / 5h
-L1_MIN_T = 2.0                 # min t-stat, required on the majority of horizons
+L1_HORIZON_FAMILIES = {
+    "scalp_intraday": (3, 10, 20),
+    "intraday_swing": (10, 20, 60),
+}
+L1_MIN_T = 2.0                 # balanced/strict min t-stat inside the winning horizon family
 L1_MIN_SIGNALS = 30            # fewer firings than this = no evidence of edge
+L1_SIGNAL_EDGE_MODES = {
+    # coherent positive family is enough; useful for discovery, not promotion
+    "loose": {"min_t": 1.0, "required_t_ok": 0, "required_avg_t": 0.0},
+    # default: coherent family plus moderate statistical evidence
+    "balanced": {"min_t": 2.0, "required_t_ok": 2, "required_avg_t": 1.5},
+    # demo/production hardening: every horizon in the family needs evidence
+    "strict": {"min_t": 2.0, "required_t_ok": 3, "required_avg_t": 2.0},
+}
 
 
 # --- ported PassFailCriteria (walk_forward_config.py) ---
@@ -85,11 +98,14 @@ class GauntletConfig:
     mc_sims: int = 2000
     max_grid: int = 48         # DECISION: cap combos so the loop stays tractable
     exit_menu: bool = False    # v0.3 §5: run the staged first-pass SL×TP menu (Layer 2)
+    signal_edge_mode: str = "balanced"  # loose | balanced | strict
     thresholds: Thresholds = None
 
     def __post_init__(self):
         if self.thresholds is None:
             self.thresholds = Thresholds()
+        if self.signal_edge_mode not in L1_SIGNAL_EDGE_MODES:
+            raise ValueError(f"unknown signal_edge_mode: {self.signal_edge_mode}")
 
 
 def _add_months(dt: datetime, months: int) -> datetime:
@@ -139,11 +155,40 @@ def _trades_r(exp) -> list[float]:
     return [t["pnl_r"] for t in exp.raw_metrics.get("trades", [])]
 
 
-def _signal_edge(spec, bars) -> dict:
+def _horizon_families(horizons: dict, mode: str = "balanced") -> dict:
+    rules = L1_SIGNAL_EDGE_MODES[mode]
+    families = {}
+    for name, hs in L1_HORIZON_FAMILIES.items():
+        fav = sum(horizons[h]["mean"] > 0 for h in hs)
+        t_values = [horizons[h]["t"] for h in hs]
+        avg_t = sum(t_values) / len(t_values)
+        t_ok = sum(t >= rules["min_t"] for t in t_values)
+        families[name] = {
+            "horizons": list(hs),
+            "mode": mode,
+            "favourable": fav,
+            "required_favourable": len(hs),
+            "t_ok": t_ok,
+            "required_t_ok": rules["required_t_ok"],
+            "min_t": rules["min_t"],
+            "avg_t": round(avg_t, 3),
+            "required_avg_t": rules["required_avg_t"],
+            "passed": (
+                fav == len(hs)
+                and t_ok >= rules["required_t_ok"]
+                and avg_t >= rules["required_avg_t"]
+            ),
+        }
+    return families
+
+
+def _signal_edge(spec, bars, mode: str = "balanced") -> dict:
     """Layer-1 signal-edge gate (spec §3): exit-neutral. Sign-adjusted forward
     close-to-close return over L1_HORIZONS on bars where the compiled signal
-    fires. Pass = favourable (positive) mean on EVERY horizon AND t >= 2 on the
-    majority. A real edge decays across horizons; a fluke flips sign."""
+    fires. Pass = one coherent horizon family is favourable (positive mean on
+    every horizon in the family) and satisfies the configured strictness mode.
+    A scalp need not survive 60 bars; a slower edge need not prove itself after
+    3 bars."""
     bt = compile_to_backtest(spec)
     params = bt.default_params()
     env = bt._env(bars)
@@ -169,19 +214,34 @@ def _signal_edge(spec, bars) -> dict:
         n_fav += mu > 0
         n_t_ok += tstat >= L1_MIN_T
 
+    families = _horizon_families(horizons, mode=mode)
+
     n_signals = int((d != 0).sum())
+    passed_family = None
     if n_signals < L1_MIN_SIGNALS:
         passed, reason = False, f"signal fires only {n_signals}x < {L1_MIN_SIGNALS} (no evidence)"
-    elif n_fav < len(L1_HORIZONS):
-        passed = False
-        reason = f"forward return favourable on {n_fav}/{len(L1_HORIZONS)} horizons (needs all)"
-    elif n_t_ok <= len(L1_HORIZONS) // 2:
-        passed = False
-        reason = f"t >= {L1_MIN_T} on only {n_t_ok}/{len(L1_HORIZONS)} horizons (needs majority)"
     else:
-        passed, reason = True, ""
-    return {"horizons": {str(h): v for h, v in horizons.items()},
-            "n_signals": n_signals, "passed": passed, "reason": reason}
+        winners = [name for name, f in families.items() if f["passed"]]
+        if winners:
+            passed, reason, passed_family = True, "", winners[0]
+        elif max(f["favourable"] for f in families.values()) < 3:
+            passed = False
+            reason = "no coherent horizon family: no 3-horizon cluster has favourable forward returns"
+        else:
+            best = max(families.items(), key=lambda kv: (kv[1]["favourable"], kv[1]["avg_t"], kv[1]["t_ok"]))
+            f = best[1]
+            passed = False
+            needs = []
+            if f["t_ok"] < f["required_t_ok"]:
+                needs.append(f"t >= {f['min_t']} on {f['t_ok']}/{len(f['horizons'])} horizons")
+            if f["avg_t"] < f["required_avg_t"]:
+                needs.append(f"avg t {f['avg_t']:.2f} < required {f['required_avg_t']:.2f}")
+            reason = f"weak signal edge in best family {best[0]} ({mode}): " + "; ".join(needs)
+    return {"mode": mode, "horizons": {str(h): v for h, v in horizons.items()},
+            "horizon_families": families,
+            "passed_family": passed_family,
+            "n_signals": n_signals, "min_signals": L1_MIN_SIGNALS,
+            "passed": passed, "reason": reason}
 
 
 # --- LAYER 2 (v0.3 §5): the first-pass exit menu ---
@@ -247,7 +307,8 @@ def _select_exit_config(spec, run_fn, period):
 
 
 def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
-          cfg: GauntletConfig | None = None, mem=None, bars=None) -> tuple[Scorecard, Verdict]:
+          cfg: GauntletConfig | None = None, mem=None, bars=None,
+          costs: dict | None = None) -> tuple[Scorecard, Verdict]:
     """Run the gauntlet. Returns (Scorecard, Verdict). If `mem`, persists the
     full-period anchor experiment (its id anchors experiment_id on both).
     Scorecard/Verdict persistence is the caller's job — the research loop
@@ -255,6 +316,10 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
     `bars` feeds the Layer-1/Layer-2 stages; auto-loaded for the real runner,
     injectable for offline tests, and both stages skip cleanly without it."""
     cfg = cfg or GauntletConfig()
+    # costs (None = frictionless) bound onto every run_fn call — re-run the whole
+    # gauntlet with friction on to stress-test edges that passed clean.
+    if costs is not None:
+        run_fn = partial(run_fn, costs=costs)
     t = cfg.thresholds
     reasons: list[str] = []
     diag: dict = {}  # per-gate glass box — every computed value + its threshold
@@ -298,7 +363,7 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
     # --- LAYER 1 (v0.3 §3): signal-edge gate — exit-neutral, kills junk before
     # anything expensive. Skipped (recorded) when no bars are available. ---
     if bars is not None:
-        se = _signal_edge(spec, bars)
+        se = _signal_edge(spec, bars, mode=cfg.signal_edge_mode)
         diag["gate_signal_edge"] = se
         if not se["passed"]:
             reasons.append(f"no signal edge: {se['reason']}")

@@ -30,6 +30,17 @@ class ScriptedLLM:
         return self.hyps.pop(0) if "FALSIFIABLE" in system else self.specs.pop(0)
 
 
+class FailingHypothesisLLM(ScriptedLLM):
+    def __init__(self):
+        super().__init__([], [])
+
+    def complete(self, system, prompt, model, max_tokens=1024):
+        self.models.append(model)
+        if "FALSIFIABLE" in system:
+            raise RuntimeError("provider returned no text block")
+        return super().complete(system, prompt, model, max_tokens)
+
+
 def _hyp(claim, mech, feats):
     return json.dumps({"claim": claim, "mechanism": mech, "required_features": feats,
                        "expected_regime": "unknown"})
@@ -104,11 +115,25 @@ def test_unattended_run_kills_most_surfaces_survivor():
     # runtime models come from the split (Fable is build-only)
     assert set(s.budget_spent) == {"exploit", "explore", "wildcard"}
 
+    events = mem.list_research_events(run_id=s.run_id)
+    assert events
+    assert any(e["role"] == "hypothesis" and e["stage"] == "propose" for e in events)
+    assert any(e["role"] == "synthesis" and e["stage"] == "compile" for e in events)
+    assert any(e["role"] == "gauntlet" and e["stage"] == "evaluate" for e in events)
+    assert any(e["status"] in ("kill", "survive", "promote") for e in events)
+
 
 def test_run_is_deterministic():
     a = run_research(mem=_mem(), llm=_llm(), run_fn=_run_fn_over(_bars_uptrend()),
                      period=(START, END), cfg=_cfg(), iterations=8)
     b = run_research(mem=_mem(), llm=_llm(), run_fn=_run_fn_over(_bars_uptrend()),
                      period=(START, END), cfg=_cfg(), iterations=8)
-    assert (a.proposed, a.killed, a.survived, a.worker_runs, a.budget_spent) == \
-           (b.proposed, b.killed, b.survived, b.worker_runs, b.budget_spent)
+    assert (a.proposed, a.killed, a.survived, a.worker_runs, a.skipped, a.budget_spent) == \
+           (b.proposed, b.killed, b.survived, b.worker_runs, b.skipped, b.budget_spent)
+
+
+def test_candidate_failures_are_non_fatal_and_reported():
+    s = run_research(mem=_mem(), llm=FailingHypothesisLLM(),
+                     run_fn=_run_fn_over(_bars_uptrend()), period=(START, END), cfg=_cfg(), iterations=1)
+    assert s.skipped == 1
+    assert any("provider returned no text block" in f for f in s.failures)

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Popper — PowerShell Command Reference</title>
+<style>
+  @page { size: A4; margin: 12mm 13mm; }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font-family: "Segoe UI", system-ui, Arial, sans-serif; color: #1b1f24; margin: 0; font-size: 10px; line-height: 1.42; }
+  header { border-bottom: 3px solid #2b6cb0; padding-bottom: 7px; margin-bottom: 10px; display: flex; align-items: baseline; justify-content: space-between; }
+  h1 { font-size: 18px; margin: 0; color: #12283f; }
+  header .sub { font-size: 9.3px; color: #5b6672; }
+  .path { font-family: "Cascadia Code", Consolas, monospace; color: #2b6cb0; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: #12283f; margin: 12px 0 5px; padding-bottom: 3px; border-bottom: 1px solid #d9e2ec; break-after: avoid; }
+  h2 .n { color: #2b6cb0; margin-right: 6px; }
+  .grid { column-count: 2; column-gap: 15px; }
+  .card { break-inside: avoid; margin: 0 0 8px; }
+  .desc { color: #4a5568; margin: 0 0 3px; }
+  pre { background: #f4f7fa; border: 1px solid #e0e8f0; border-left: 3px solid #2b6cb0; border-radius: 4px; padding: 6px 8px; margin: 0 0 4px; font-family: "Cascadia Code", Consolas, "Courier New", monospace; font-size: 9px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; break-inside: avoid; }
+  .cmt { color: #7a8896; } .k { color: #b83280; } .flag { color: #2f855a; }
+  b.inline { background:#eef4fb; padding:0 4px; border-radius:3px; font-family:"Cascadia Code",Consolas,monospace; font-weight:600; }
+  .start { background:#eaf5ea; border:1px solid #b7ddb7; border-left:4px solid #2f855a; border-radius:5px; padding:8px 11px; margin-bottom:11px; break-inside:avoid; }
+  .start h2 { border:0; margin:0 0 4px; color:#245b34; }
+  .gotcha { background:#fdecec; border:1px solid #f2c0c0; border-left:4px solid #c53030; border-radius:5px; padding:7px 10px; margin-bottom:11px; font-size:9.3px; break-inside:avoid; }
+  .gotcha b { color:#9b2020; }
+  .x { color:#c53030; font-weight:700; } .ok { color:#2f855a; font-weight:700; }
+  .tip { background:#fffaf0; border:1px solid #f0e0c0; border-radius:4px; padding:6px 9px; font-size:9.2px; break-inside:avoid; }
+  .tip b { color:#9c6b1e; }
+  footer { margin-top:10px; padding-top:6px; border-top:1px solid #d9e2ec; font-size:8.4px; color:#8895a3; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Popper — PowerShell Command Reference</h1>
+    <div class="sub">Autonomous alpha research &amp; falsification &nbsp;·&nbsp; v0.3</div>
+  </div>
+  <div class="sub">CLI = <span class="path">python -m popper.cli &lt;cmd&gt;</span></div>
+</header>
+
+<div class="start">
+  <h2>▶ Start every session here (2 lines)</h2>
+<pre><span class="k">cd</span> C:\Users\Jakes\Projects\popper          <span class="cmt"># the project ROOT — not .venv\scripts</span>
+<span class="k">.\.venv\Scripts\Activate.ps1</span>                <span class="cmt"># prompt now shows (.venv); `python` = the venv's</span></pre>
+  <div class="desc">After activating, every command below can be typed as <b class="inline">popper &lt;cmd&gt;</b> or <b class="inline">python -m popper.cli &lt;cmd&gt;</b>.
+  Didn't activate? Prefix any command with <b class="inline">&amp; .\.venv\Scripts\python.exe -m popper.cli</b></div>
+</div>
+
+<div class="gotcha">
+  <b>⚠ Common mistake.</b>
+  <span class="x">Do NOT</span> <b class="inline">cd</b> into <b class="inline">.venv\Scripts</b>, and <span class="x">do NOT</span> run a bare <b class="inline">python.exe</b> — PowerShell runs the <b>global</b> Python (no <b class="inline">popper</b> installed) → <i>ModuleNotFoundError: No module named 'popper'</i>.
+  <span class="ok">Always</span> run from the project <b>root</b> and use the <b>venv's</b> Python (activate, or call it by full path with <b class="inline">&amp;</b>).
+</div>
+
+<div class="grid">
+
+  <div class="card">
+    <h2><span class="n">1</span>Seed &amp; inspect memory</h2>
+<pre><span class="cmt"># load the example hypotheses into alpha memory</span>
+<span class="k">popper seed</span>
+<span class="cmt"># print current counts (JSON)</span>
+<span class="k">popper stats</span></pre>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">2</span>Run ONE hypothesis</h2>
+    <p class="desc">Full loop: store → backtest → falsify → judge → store verdict.</p>
+<pre><span class="k">popper run</span> <span class="flag">--hypothesis</span> examples\hypotheses\ny_open_momentum.yaml
+
+<span class="cmt"># fixed period:</span>
+<span class="k">popper run</span> <span class="flag">--hypothesis</span> examples\hypotheses\jake_london_regime_pullback.yaml <span class="flag">`</span>
+    <span class="flag">--start</span> 2024-01-01 <span class="flag">--end</span> 2025-12-31
+
+<span class="cmt"># strictness + run even if near-duplicate:</span>
+<span class="k">popper run</span> <span class="flag">--hypothesis</span> examples\hypotheses\rsi_knife_edge.yaml <span class="flag">`</span>
+    <span class="flag">--signal-edge-mode</span> strict <span class="flag">--allow-stale</span></pre>
+    <p class="desc"><b class="inline">--hypothesis</b> (required) · <b class="inline">--start</b>/<b class="inline">--end</b> YYYY-MM-DD · <b class="inline">--signal-edge-mode</b> loose|balanced|strict · <b class="inline">--allow-stale</b></p>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">3</span>Autonomous research loop</h2>
+    <p class="desc">The Director proposes alphas; the gauntlet falsifies each — hands-off.</p>
+<pre><span class="k">popper research</span> <span class="flag">--iterations</span> 3
+<span class="k">popper research</span> <span class="flag">--iterations</span> 50 <span class="flag">--no-exit-menu</span> <span class="flag">`</span>
+    <span class="flag">--signal-edge-mode</span> balanced</pre>
+    <p class="desc"><b class="inline">--iterations</b> N (default 10) · <b class="inline">--no-exit-menu</b> · <b class="inline">--signal-edge-mode</b></p>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">4</span>API backend</h2>
+    <p class="desc">Serve the API the dashboard talks to.</p>
+<pre><span class="k">popper serve</span>   <span class="cmt"># → http://127.0.0.1:8000/docs</span></pre>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">5</span>No-activation form</h2>
+    <p class="desc">Every command works without activating — call the venv Python by path (<b class="inline">&amp;</b> = run this exe):</p>
+<pre><span class="k">&amp;</span> .\.venv\Scripts\python.exe -m popper.cli stats
+<span class="k">&amp;</span> .\.venv\Scripts\python.exe -m popper.cli research <span class="flag">--iterations</span> 3</pre>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">6</span>Full stack (GUI)</h2>
+    <p class="desc">Boots API :8000 + dashboard :5173 + browser. First run auto-installs + seeds.</p>
+<pre><span class="k">.\Popper.cmd</span>            <span class="cmt"># or double-click it</span></pre>
+    <p class="desc">Dashboard → <b class="inline">http://localhost:5173</b></p>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">7</span>Stop / free ports</h2>
+    <p class="desc">Close the two minimized windows, or free the ports:</p>
+<pre>Get-NetTCPConnection <span class="flag">-LocalPort</span> 8000,5173 <span class="flag">-State</span> Listen <span class="flag">-EA</span> SilentlyContinue <span class="flag">`</span>
+  | Select <span class="flag">-Expand</span> OwningProcess <span class="flag">-Unique</span> <span class="flag">`</span>
+  | ForEach-Object { Stop-Process <span class="flag">-Id</span> $_ <span class="flag">-Force</span> }</pre>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">8</span>Tests</h2>
+<pre><span class="cmt"># full suite</span>
+python -m pytest <span class="flag">-q</span>
+<span class="cmt"># DSL + SMC + regime (no look-ahead)</span>
+python -m pytest tests\test_dsl.py tests\test_smc.py <span class="flag">-q</span></pre>
+  </div>
+
+  <div class="tip">
+    <b>PowerShell notes.</b>
+    <b class="inline">.\</b> runs a script/exe in the current folder ·
+    <b class="inline">`</b> (backtick) at line-end continues a command ·
+    <b class="inline">&amp;</b> runs an exe by path ·
+    scripts blocked? <b class="inline">Set-ExecutionPolicy -Scope Process Bypass</b>.
+    Hypotheses live in <b class="inline">examples\hypotheses\</b>.
+  </div>
+
+</div>
+
+<footer>Commands: run · research · seed · stats · serve. &nbsp; Always from <span class="path">C:\Users\Jakes\Projects\popper</span> with the venv active (or via <span class="path">&amp; .\.venv\Scripts\python.exe -m popper.cli</span>).</footer>
+</body>
+</html>

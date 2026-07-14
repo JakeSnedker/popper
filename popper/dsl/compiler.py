@@ -64,7 +64,8 @@ class CompiledStrategy:
             env[f] = compute_feature(f, bars)
         return env
 
-    def __call__(self, bars: pd.DataFrame, params: dict | None = None) -> dict:
+    def __call__(self, bars: pd.DataFrame, params: dict | None = None,
+                 costs: dict | None = None) -> dict:
         spec = self.spec
         params = {**self.default_params(), **(params or {})}
 
@@ -102,6 +103,27 @@ class CompiledStrategy:
         risk_frac = w.sizing.risk_pct / 100.0
         max_per_day = w.constraints.max_trades_per_day
 
+        # cost model. costs=None -> frictionless (legacy behaviour, all tests).
+        # Deducted per trade in R: cross half the bid/ask spread on each side,
+        # plus per-side slippage, plus a round-trip commission.
+        # ponytail: point_value is a CALIBRATION KNOB — MT5 'spread' is in points
+        # and the point size differs by feed (US30 quoted 1- vs 2-decimal), so it
+        # must be passed in, never guessed. Set spread_pts to override the data
+        # column with a flat assumption.
+        cost_slip = cost_comm = 0.0
+        spread_px = None
+        if costs is not None:
+            pt = costs.get("point_value", 0.01)
+            cost_slip = costs.get("slippage_pts", 0.0) * pt   # per side
+            cost_comm = costs.get("commission_pts", 0.0) * pt  # per round trip
+            fixed = costs.get("spread_pts")                    # None -> bar column
+            if fixed is not None:
+                spread_px = np.full(len(bars), fixed * pt)
+            elif "spread" in bars.columns:
+                spread_px = bars["spread"].to_numpy() * pt
+            else:
+                spread_px = np.zeros(len(bars))
+
         equity, equity_curve, trades = 1.0, [1.0], []
         pos = 0  # +1 long, -1 short, 0 flat
         pending = 0  # signal fired at prev close, enter at this open
@@ -113,12 +135,22 @@ class CompiledStrategy:
         def close_trade(i: int, price: float, reason: str):
             nonlocal equity, pos
             pnl_r = (price - entry) / risk * pos
+            cost_r = 0.0
+            if costs is not None:
+                cost_px = (0.5 * (spread_px[entry_i] + spread_px[i])
+                           + 2 * cost_slip + cost_comm)
+                cost_r = cost_px / risk
+                pnl_r -= cost_r
             equity *= 1.0 + risk_frac * pnl_r
             trades.append({
                 "dir": "long" if pos == 1 else "short",
                 "entry_i": entry_i, "exit_i": i,
                 "entry": round(entry, 2), "exit": round(price, 2),
-                "pnl_r": round(pnl_r, 4), "reason": reason,
+                # risk = the price distance of 1R — lets net-of-cost metrics be
+                # derived exactly from a frictionless run (no second backtest)
+                "risk": round(risk, 6),
+                "pnl_r": round(pnl_r, 4), "cost_r": round(cost_r, 4),
+                "reason": reason,
             })
             equity_curve.append(round(equity, 6))
             pos = 0

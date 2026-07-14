@@ -21,6 +21,8 @@ from popper.dsl.features.levels import LEVEL_FEATURES, LOSS_SIDE, PROFIT_SIDE
 _PARAM_REF = re.compile(r"^p\[(\w+)\]$")
 
 _EITHER = LEVEL_FEATURES - LOSS_SIDE - PROFIT_SIDE  # bb_line — usable both ways
+_LOCAL_UNIVERSES = {"US30"}
+_LOCAL_TIMEFRAMES = {"1m", "5m", "M1", "M5"}
 
 
 class DSLValidationError(ValueError):
@@ -115,6 +117,30 @@ def validate_spec(spec: StrategySpec | dict) -> StrategySpec:
         if not isinstance(grid, list) or not grid:
             errors.append(f"param_space[{k!r}] must be a non-empty list")
 
+    if errors:
+        raise DSLValidationError(errors)
+    return spec
+
+
+def validate_local_data_context(spec: StrategySpec) -> StrategySpec:
+    """Reject specs the current local research runner cannot load.
+
+    Kept separate from validate_spec() because the DSL itself is portable and
+    tests can inject synthetic data at other timeframes. The real local runner
+    currently has US30 M1/M5 parquet only, so agents must synthesize against 5m.
+    """
+    errors: list[str] = []
+    unsupported_universe = [u for u in spec.context.universe if u not in _LOCAL_UNIVERSES]
+    if unsupported_universe:
+        errors.append(
+            f"context.universe contains unsupported symbols {unsupported_universe}; "
+            f"available local data: {sorted(_LOCAL_UNIVERSES)}"
+        )
+    if spec.context.timeframe not in _LOCAL_TIMEFRAMES:
+        errors.append(
+            f"context.timeframe {spec.context.timeframe!r} has no local data; "
+            "use '5m' for the current US30 research loop"
+        )
     if errors:
         raise DSLValidationError(errors)
     return spec

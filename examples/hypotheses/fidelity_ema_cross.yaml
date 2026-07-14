@@ -1,0 +1,39 @@
+# FIDELITY BENCHMARK — matched pair with mt5/FidelityEMACross.mq5.
+# Not a market hypothesis: the strategy logic here is PROVABLY IDENTICAL to the
+# hand-written MQL5 EA, so any result difference between run(spec) and an MT5
+# Strategy Tester run is PURELY a fill-model difference (spread, intrabar tick
+# path, exit quantization). Compare with: python scripts/fidelity_diff.py
+#
+# "Cross above" definition (the DSL grammar has no lag operator, so a classic
+# close[i-1] <= ema[i-1] cross is inexpressible): the bar's body straddles the
+# current EMA-50 — open < ema_50 AND close > ema_50. The EA encodes the SAME
+# expression, evaluated on the same just-completed bar.
+hypothesis:
+  claim: >-
+    Popper's simulated fills on US30 M1 match a real MetaTrader 5 run of
+    identical strategy logic to within spread-sized slippage; larger or
+    systematic divergence falsifies the fill model.
+  mechanism: >-
+    Benchmark harness, not an edge claim. Signal timing, EMA/ATR math, stop
+    and target placement are bit-matched between the DSL spec and the EA, so
+    the residual difference isolates the fill simulation itself.
+  rationale: Matched-pair fidelity benchmark for the Popper backtest engine.
+spec:
+  name: fidelity_ema_cross
+  alpha:
+    features: [ema_50]
+    # long-only cross event: bar opens below the EMA-50, closes above it.
+    signal: "open < ema_50 AND close > ema_50"
+  wrapper:
+    entry: { type: market }          # fills at NEXT bar's open
+    stop: { type: atr, mult: 2.0 }   # entry - 2*ATR14 as of the SIGNAL bar
+    target: { type: ratio, ratio: 2.0 }  # entry + 2R = entry + 4*ATR14(signal bar)
+    trail: { type: none }
+    break_even: { type: none }
+    sizing: { risk_pct: 0.5 }
+    constraints: {}                  # no max_trades_per_day
+  context:
+    universe: [US30]
+    timeframe: 1m
+    cost_model: systematic
+  param_space: {}

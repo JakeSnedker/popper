@@ -77,7 +77,7 @@ function Tooltip({ p }: { p: Placed }) {
 }
 
 export function AlphaMap({ onSelect }: { onSelect: (id: string) => void }) {
-  const { data, loading, error, reload } = useAsync(() => api.map(), []);
+  const { data, loading, error, reload } = useAsync(() => api.map(), [], 10000);
   const [hover, setHover] = useState<Placed | null>(null);
   const placed = useMemo(() => (data ? place(data.points) : []), [data]);
 
@@ -99,7 +99,7 @@ export function AlphaMap({ onSelect }: { onSelect: (id: string) => void }) {
           </span>
         ))}
         <span className="ml-auto text-[10px] font-mono text-slate-600">
-          {data.points.length} hypotheses · 2D PCA of embedding space
+          {data.points.length} hypotheses · 2D PCA · auto-refresh 10s
         </span>
       </div>
 

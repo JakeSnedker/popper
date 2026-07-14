@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from popper.dsl import DSLValidationError, compile_to_backtest, load_spec, validate_spec
+from popper.dsl.validator import validate_local_data_context
 from popper.dsl.features import _EXACT, compute_feature, resolve_feature
 
 EXAMPLES = sorted((Path(__file__).parent.parent / "popper" / "dsl" / "examples").glob("*.yaml"))
@@ -113,6 +114,18 @@ def test_rejects_param_not_in_space():
 
 def test_rejects_unused_param_space_key():
     assert "not referenced" in _errors(param_space={"atr_min": [0.5], "ghost": [1, 2]})
+
+
+def test_rejects_unsupported_timeframe_before_runner_crash():
+    with pytest.raises(DSLValidationError) as e:
+        validate_local_data_context(validate_spec(_spec(context={"universe": ["US30"], "timeframe": "15m"})))
+    assert "context.timeframe '15m' has no local data" in str(e.value)
+
+
+def test_rejects_unsupported_symbol_before_runner_crash():
+    with pytest.raises(DSLValidationError) as e:
+        validate_local_data_context(validate_spec(_spec(context={"universe": ["NAS100"], "timeframe": "5m"})))
+    assert "unsupported symbols" in str(e.value)
 
 
 # --- feature library: point-in-time correctness (no future leak) ---

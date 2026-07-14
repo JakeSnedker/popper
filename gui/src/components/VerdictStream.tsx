@@ -15,7 +15,7 @@ const mono = (v: number | null, d = 2) => (v == null ? "–" : v.toFixed(d));
 
 /** Compact newest-first feed of gauntlet verdicts; click opens the hypothesis. */
 export function VerdictStream({ onSelect }: { onSelect: (id: string) => void }) {
-  const { data, loading, error, reload } = useAsync(() => api.verdicts(8), []);
+  const { data, loading, error, reload } = useAsync(() => api.verdicts(8), [], 10000);
 
   if (loading) return <LoadingRows rows={4} />;
   if (error) return <ErrorState message={error} onRetry={reload} />;
@@ -25,7 +25,7 @@ export function VerdictStream({ onSelect }: { onSelect: (id: string) => void }) 
   return (
     <div className="card overflow-hidden">
       <div className="px-3 py-2 border-b border-ink-600 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
-        Latest verdicts
+        Latest verdicts · auto-refresh 10s
       </div>
       <div className="divide-y divide-ink-700 max-h-[420px] overflow-y-auto">
         {data.verdicts.map((v, i) => (

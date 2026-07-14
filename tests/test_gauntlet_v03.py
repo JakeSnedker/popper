@@ -10,7 +10,7 @@ from test_falsify import END, START, _bars, _cfg, _run_fn_over
 
 from popper.artifacts import StrategySpec, VerdictType
 from popper.falsify import GauntletConfig, judge
-from popper.falsify.gauntlet import _exit_menu, _signal_edge
+from popper.falsify.gauntlet import L1_MIN_T, _exit_menu, _horizon_families, _signal_edge
 
 
 def _menu_cfg():
@@ -73,8 +73,63 @@ def test_layer1_kills_no_edge_signal_before_expensive_gates():
 def test_layer1_passes_predictive_signal():
     se = _signal_edge(_momo_spec(), _uptrend_bars())
     assert se["passed"] is True
-    assert all(h["mean"] > 0 for h in se["horizons"].values())
-    assert sum(h["t"] >= 2 for h in se["horizons"].values()) >= 3
+    assert any(f["passed"] for f in se["horizon_families"].values())
+    assert sum(h["t"] >= L1_MIN_T for h in se["horizons"].values()) >= 3
+
+
+def test_layer1_passes_scoped_horizon_family_without_all_four():
+    """A scalp/intraday edge may work at 3/10/20 bars but decay by 60; a slower
+    edge may need 10/20/60 and not show at 3. Layer 1 should discover that
+    horizon family instead of requiring all four horizons to be favourable."""
+    scalp = _horizon_families({
+        3: {"mean": 0.1, "t": 2.4},
+        10: {"mean": 0.08, "t": 2.1},
+        20: {"mean": 0.04, "t": 1.4},
+        60: {"mean": -0.01, "t": -0.2},
+    })
+    assert scalp["scalp_intraday"]["passed"] is True
+    assert scalp["intraday_swing"]["passed"] is False
+
+    swing = _horizon_families({
+        3: {"mean": -0.01, "t": -0.2},
+        10: {"mean": 0.04, "t": 2.1},
+        20: {"mean": 0.08, "t": 2.4},
+        60: {"mean": 0.1, "t": 1.6},
+    })
+    assert swing["scalp_intraday"]["passed"] is False
+    assert swing["intraday_swing"]["passed"] is True
+
+
+def test_layer1_signal_edge_modes_tune_strictness():
+    horizons = {
+        3: {"mean": 0.1, "t": 0.6},
+        10: {"mean": 0.08, "t": 0.8},
+        20: {"mean": 0.04, "t": 0.4},
+        60: {"mean": -0.01, "t": -0.2},
+    }
+    loose = _horizon_families(horizons, mode="loose")
+    balanced = _horizon_families(horizons, mode="balanced")
+    assert loose["scalp_intraday"]["passed"] is True
+    assert balanced["scalp_intraday"]["passed"] is False
+    assert balanced["scalp_intraday"]["avg_t"] == 0.6
+
+    marginal = _horizon_families({
+        3: {"mean": 0.1, "t": 2.4},
+        10: {"mean": 0.08, "t": 2.1},
+        20: {"mean": 0.04, "t": 1.4},
+        60: {"mean": -0.01, "t": -0.2},
+    }, mode="strict")
+    assert marginal["scalp_intraday"]["passed"] is False
+    assert marginal["scalp_intraday"]["required_t_ok"] == 3
+
+
+def test_gauntlet_config_rejects_unknown_signal_edge_mode():
+    try:
+        GauntletConfig(signal_edge_mode="reckless")
+    except ValueError as e:
+        assert "signal_edge_mode" in str(e)
+    else:
+        raise AssertionError("expected ValueError")
 
 
 def test_layer1_sign_adjusts_short_signals():

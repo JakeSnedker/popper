@@ -27,10 +27,13 @@ import yaml
 
 from popper.artifacts import ExperimentResult, Hypothesis, StrategySpec
 from popper.artifacts.enums import HypothesisStatus, VerdictType
-from popper.dsl import validate_spec
+from popper.dsl import DSLValidationError, validate_spec
+from popper.dsl.validator import validate_local_data_context
 from popper.experiments.runner import run
+from popper.feature_gaps import record_feature_gaps
 from popper.falsify import GauntletConfig, calculate_edge, judge
 from popper.memory import complete_scorecard, get_memory
+from popper.memory.map import STALE
 
 _STATUS = {
     VerdictType.KILL: HypothesisStatus.KILLED,
@@ -57,12 +60,15 @@ def run_loop(
     mem=None,
     run_fn=run,
     bars=None,
+    allow_stale: bool = False,
+    costs: dict | None = None,
 ) -> dict:
     """Execute the full chain for one hypothesis file; return a summary dict.
     Everything is persisted to alpha memory (default: the configured store)."""
     mem = mem or get_memory()
     h, spec = load_hypothesis_file(path)
-    return evaluate(h, spec, mem=mem, period=period, cfg=cfg, run_fn=run_fn, bars=bars)
+    return evaluate(h, spec, mem=mem, period=period, cfg=cfg, run_fn=run_fn, bars=bars,
+                    allow_stale=allow_stale, costs=costs)
 
 
 def evaluate(
@@ -73,20 +79,35 @@ def evaluate(
     cfg: GauntletConfig | None = None,
     run_fn=run,
     bars=None,
+    allow_stale: bool = False,
+    costs: dict | None = None,
 ) -> dict:
     """Store + falsify one (hypothesis, spec) pair and return the summary dict.
     The shared core of the manual loop AND the Director's explore engine: a bad
     spec is rejected before anything is stored (validate first)."""
     mem = mem or get_memory()
-    validate_spec(spec)  # DSLValidationError surfaces to the caller before anything is stored
+    try:
+        validate_spec(spec)  # DSLValidationError surfaces to the caller before anything is stored
+        if run_fn is run:
+            validate_local_data_context(spec)  # fail before storage if local parquet cannot serve it
+    except DSLValidationError as e:
+        record_feature_gaps(mem, e, source="manual/evaluate", hypothesis=h, spec=spec)
+        raise
+
+    nearest_id, nearest_sim = mem.nearest(h)
+    stale = nearest_sim >= STALE
+    if stale and not allow_stale:
+        raise ValueError(
+            f"stale hypothesis: nearest prior {nearest_id} similarity {nearest_sim:.3f} >= {STALE}; "
+            "use --allow-stale to run anyway"
+        )
 
     h = mem.add_hypothesis(h)  # enriches: embedding, tags, novelty_score
-    stale = mem.is_stale(h)  # near-duplicate of a PRIOR idea (self excluded via h.id)
     spec.hypothesis_id = h.id
     spec = mem.add_spec(spec)
 
     mem.set_status(h.id, HypothesisStatus.TESTING)
-    sc, v = judge(spec, run_fn=run_fn, period=period, cfg=cfg, mem=mem, bars=bars)
+    sc, v = judge(spec, run_fn=run_fn, period=period, cfg=cfg, mem=mem, bars=bars, costs=costs)
 
     exp = anchor_experiment(mem, h.id, sc.experiment_id)
     complete_scorecard(sc, mem, h, exp)  # novelty/correlation/regime/behaviour in place

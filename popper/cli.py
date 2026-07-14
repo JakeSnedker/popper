@@ -20,14 +20,29 @@ def _run(argv: list[str]) -> None:
     p.add_argument("--hypothesis", required=True, help="combined hypothesis+spec YAML (examples/hypotheses/)")
     p.add_argument("--start", help="period start YYYY-MM-DD (default: all available data)")
     p.add_argument("--end", help="period end YYYY-MM-DD")
+    p.add_argument("--signal-edge-mode", choices=("loose", "balanced", "strict"), default="balanced",
+                   help="Layer-1 signal-edge strictness (default: balanced)")
+    p.add_argument("--allow-stale", action="store_true",
+                   help="run even if alpha memory finds a near-duplicate")
+    p.add_argument("--costs", action="store_true",
+                   help="apply realistic friction (spread from data + slippage + commission) "
+                        "instead of frictionless fills — re-test edges that passed clean")
+    p.add_argument("--point-value", type=float, default=0.01,
+                   help="price per MT5 spread-point, the cost calibration knob (default 0.01)")
+    p.add_argument("--slippage-pts", type=float, default=0.0, help="per-side slippage in points")
+    p.add_argument("--commission-pts", type=float, default=0.0, help="round-trip commission in points")
     a = p.parse_args(argv)
     period = (a.start, a.end) if a.start and a.end else None
+    costs = ({"point_value": a.point_value, "slippage_pts": a.slippage_pts,
+              "commission_pts": a.commission_pts} if a.costs else None)
 
     from popper.dsl import DSLValidationError
+    from popper.falsify import GauntletConfig
     from popper.research import run_loop
 
     try:
-        s = run_loop(a.hypothesis, period=period)
+        s = run_loop(a.hypothesis, period=period, cfg=GauntletConfig(signal_edge_mode=a.signal_edge_mode),
+                     allow_stale=a.allow_stale, costs=costs)
     except (DSLValidationError, ValueError) as e:
         sys.exit(f"hypothesis file rejected: {e}")
     _print_summary(s)
@@ -68,13 +83,15 @@ def _research(argv: list[str]) -> None:
     p = argparse.ArgumentParser(prog="popper research", description="Unattended Director research loop.")
     p.add_argument("--iterations", type=int, default=10, help="loop iterations (default 10)")
     p.add_argument("--no-exit-menu", action="store_true", help="skip the v0.3 exit-menu search")
+    p.add_argument("--signal-edge-mode", choices=("loose", "balanced", "strict"), default="balanced",
+                   help="Layer-1 signal-edge strictness (default: balanced)")
     a = p.parse_args(argv)
 
     from popper.falsify import GauntletConfig
     from popper.orchestrator import run_research
     # v0.3 §5: autonomous discovery runs the staged exit menu by default (agents
     # propose alphas; the gauntlet searches each one's exit). --no-exit-menu opts out.
-    cfg = GauntletConfig(exit_menu=not a.no_exit_menu)
+    cfg = GauntletConfig(exit_menu=not a.no_exit_menu, signal_edge_mode=a.signal_edge_mode)
     _print_run(run_research(iterations=a.iterations, cfg=cfg))
 
 
@@ -84,7 +101,13 @@ def _print_run(s) -> None:
     print(f"POPPER RESEARCH RUN — {s.iterations} iterations")
     print(f"  budget spent (engine: iters): {s.budget_spent}")
     print(bar)
-    print(f"proposed {s.proposed}  |  killed {s.killed}  |  survived {s.survived}  |  worker refinements {s.worker_runs}")
+    print(f"proposed {s.proposed}  |  killed {s.killed}  |  survived {s.survived}  |  worker refinements {s.worker_runs}  |  skipped {s.skipped}")
+    if s.failures:
+        print("non-fatal failures:")
+        for reason in s.failures[:8]:
+            print(f"  ! {reason}")
+        if len(s.failures) > 8:
+            print(f"  ... {len(s.failures) - 8} more")
     print("-" * 64)
     print("categories explored:")
     for et, c in s.category_report().items():

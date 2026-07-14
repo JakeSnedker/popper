@@ -1,5 +1,23 @@
 import type { Scorecard } from "../lib/types";
 
+const GATE_LABELS: Record<string, string> = {
+  gate_signal_edge: "Signal edge / horizon family",
+  gate0_leakage: "Leakage / look-ahead",
+  gate1_walkforward: "Walk-forward OOS",
+  gate2_robustness: "Parameter robustness",
+  gate3_mc_ruin: "Monte Carlo ruin",
+  gate4_multiple_testing: "Multiple testing (DSR / PBO)",
+};
+
+const GATE_ORDER = [
+  "gate_signal_edge",
+  "gate0_leakage",
+  "gate1_walkforward",
+  "gate2_robustness",
+  "gate3_mc_ruin",
+  "gate4_multiple_testing",
+];
+
 const BARS: { key: keyof Scorecard; label: string }[] = [
   { key: "robustness", label: "Robustness" },
   { key: "regime_stability", label: "Regime stability" },
@@ -24,10 +42,25 @@ function Bar({ label, value }: { label: string; value: number }) {
   );
 }
 
+function firstFailedGate(sc: Scorecard): string | null {
+  const key = GATE_ORDER.find((k) => sc.diagnostics?.[k]?.passed === false);
+  return key ? GATE_LABELS[key] ?? key : null;
+}
+
 export function ScorecardView({ sc }: { sc: Scorecard }) {
   const pboBad = sc.pbo > 0.5;
+  const failedAt = firstFailedGate(sc);
   return (
     <div className="space-y-3">
+      {failedAt && (
+        <div className="rounded-lg border border-red-500/20 bg-red-500/10 p-2.5">
+          <div className="text-xs uppercase tracking-wide text-red-300 font-semibold">Killed at</div>
+          <div className="text-sm text-slate-100 mt-0.5">{failedAt}</div>
+          <p className="text-[11px] text-slate-500 mt-1 leading-snug">
+            Later scorecard values may be default penalties because fail-fast stopped the gauntlet here.
+          </p>
+        </div>
+      )}
       {BARS.map((b) => (
         <Bar key={b.key} label={b.label} value={sc[b.key] as number} />
       ))}

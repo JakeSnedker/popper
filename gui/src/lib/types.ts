@@ -76,8 +76,35 @@ export interface WalkForwardWindow {
 /** Per-gate glass box from the Falsification Gauntlet. Every gate carries
  * `passed`; the rest of the fields depend on which gate it is (gates that
  * never ran are simply absent from the diagnostics dict). */
+export interface HorizonDiag {
+  n: number;
+  mean: number;
+  t: number;
+}
+
+export interface HorizonFamilyDiag {
+  horizons: number[];
+  mode?: "loose" | "balanced" | "strict";
+  favourable: number;
+  required_favourable: number;
+  t_ok: number;
+  required_t_ok: number;
+  min_t?: number;
+  avg_t?: number;
+  required_avg_t?: number;
+  passed: boolean;
+}
+
 export interface GateDiag {
   passed: boolean;
+  reason?: string;
+  // layer 1 · signal edge
+  mode?: "loose" | "balanced" | "strict";
+  horizons?: Record<string, HorizonDiag>;
+  horizon_families?: Record<string, HorizonFamilyDiag>;
+  passed_family?: string | null;
+  n_signals?: number;
+  min_signals?: number;
   // gate 1 · walk-forward
   windows?: WalkForwardWindow[];
   n_windows?: number;
@@ -144,6 +171,54 @@ export interface PhasesResponse {
 export interface Stats {
   hypotheses_by_status: Record<string, number>;
   counts: Record<string, number>;
+}
+
+export type SignalEdgeMode = "loose" | "balanced" | "strict";
+
+export interface FeatureGap {
+  id: string;
+  name: string;
+  kind: string;
+  source: string;
+  detail: string;
+  examples: string[];
+  count: number;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResearchRunRequest {
+  iterations: number;
+  signal_edge_mode: SignalEdgeMode;
+  exit_menu: boolean;
+}
+
+export interface ResearchRunSummary {
+  run_id: string;
+  iterations: number;
+  budget_spent: Record<string, number>;
+  proposed: number;
+  killed: number;
+  survived: number;
+  worker_runs: number;
+  skipped: number;
+  failures: string[];
+  categories: Record<string, { survivors: number; kills: number; dead: boolean }>;
+}
+
+export interface ResearchEvent {
+  id: string;
+  run_id: string;
+  iteration: number;
+  engine: string;
+  role: string;
+  stage: string;
+  status: string;
+  message: string;
+  artifact_ids: Record<string, string>;
+  payload: Record<string, unknown>;
+  created_at: string;
 }
 
 export type SubsystemStatus = "built" | "partial" | "next" | "planned";

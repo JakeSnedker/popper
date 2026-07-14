@@ -42,14 +42,34 @@ def _prompt(view, wildcard: bool = False) -> str:
     ])
 
 
-def propose(view, llm, model: str = MODELS["hypothesis"], wildcard: bool = False) -> Hypothesis:
+def propose(
+    view,
+    llm,
+    model: str = MODELS["hypothesis"],
+    wildcard: bool = False,
+    max_repairs: int = 2,
+) -> Hypothesis:
     """Generate one Hypothesis from the blind map view via `llm`. wildcard=True
-    steers off-map (the Director's 10% exploration budget)."""
-    d = json.loads(strip_fence(llm.complete(SYSTEM, _prompt(view, wildcard), model)))
-    regime = d.get("expected_regime", "unknown")
-    return Hypothesis(
-        claim=d["claim"],
-        mechanism=d["mechanism"],
-        required_features=d.get("required_features", []),
-        expected_regime=Regime(regime) if regime in _REGIMES else Regime.UNKNOWN,
-    )
+    steers off-map (the Director's 10% exploration budget). Repairs malformed
+    JSON because model output shape is an I/O boundary, not a research result."""
+    prompt = _prompt(view, wildcard)
+    last_err = "none"
+    for attempt in range(max_repairs + 1):
+        p = prompt if attempt == 0 else (
+            f"{prompt}\n\nYour previous response was INVALID JSON:\n{last_err}\n"
+            "Return one complete JSON object only, with no prose."
+        )
+        raw = ""
+        try:
+            raw = llm.complete(SYSTEM, p, model, max_tokens=2048)
+            d = json.loads(strip_fence(raw))
+            regime = d.get("expected_regime", "unknown")
+            return Hypothesis(
+                claim=d["claim"],
+                mechanism=d["mechanism"],
+                required_features=d.get("required_features", []),
+                expected_regime=Regime(regime) if regime in _REGIMES else Regime.UNKNOWN,
+            )
+        except Exception as e:
+            last_err = f"{e}\nRaw response was:\n{raw[:1000]}"
+    raise ValueError(f"hypothesis generation failed after {max_repairs} repairs; last error:\n{last_err}")

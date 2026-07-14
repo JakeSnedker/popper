@@ -76,6 +76,22 @@ class AlphaMemory(ABC):
     def validated_equity_curves(self) -> list[list[float]]:
         """Equity curves of SURVIVED/PROMOTED alphas — the correlation pool."""
 
+    # --- feature-gap ledger (optional backend support) ---
+    def add_feature_gap(self, name: str, kind: str, source: str, detail: str,
+                        example: str | None = None) -> dict:
+        return {"name": name, "kind": kind, "source": source, "detail": detail,
+                "example": example, "count": 0, "status": "unsupported"}
+
+    def list_feature_gaps(self, status: str | None = None, limit: int = 50) -> list[dict]:
+        return []
+
+    # --- research trace ledger (optional backend support) ---
+    def add_research_event(self, event: dict) -> dict:
+        return event
+
+    def list_research_events(self, run_id: str | None = None, limit: int = 100) -> list[dict]:
+        return []
+
     # --- the alpha map (concrete: shared by every backend) ---
     def _enrich(self, h: Hypothesis) -> Hypothesis:
         """Embed + tag + score novelty on insert. Preserves caller-set values."""

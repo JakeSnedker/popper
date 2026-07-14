@@ -1,7 +1,7 @@
 """Phase 5 acceptance (spec/06 row 5): one call takes a hand-written hypothesis
 file end-to-end — hypothesis stored, spec linked, scorecard with novelty
 populated, verdict + status persisted — and re-running the SAME file is
-flagged stale. Injected run_fn over synthetic bars: fast, offline,
+blocked as stale unless explicitly allowed. Injected run_fn over synthetic bars: fast, offline,
 deterministic (no US30 parquet dependency)."""
 
 import numpy as np
@@ -76,16 +76,18 @@ def test_full_loop_stores_scores_and_judges(setup):
     assert s["stats"]["n_trades"] > 0
 
 
-# --- DONE-WHEN: re-running the SAME file flags it stale (but still runs) ---
+# --- DONE-WHEN: re-running the SAME file blocks stale by default; override is explicit ---
 
-def test_second_run_of_same_file_is_stale(setup):
+def test_second_run_of_same_file_blocks_stale_by_default(setup):
     mem, f, run_fn = setup
     first = run_loop(f, period=(START, END), cfg=_cfg(), mem=mem, run_fn=run_fn)
-    second = run_loop(f, period=(START, END), cfg=_cfg(), mem=mem, run_fn=run_fn)
+    with pytest.raises(ValueError, match="stale hypothesis"):
+        run_loop(f, period=(START, END), cfg=_cfg(), mem=mem, run_fn=run_fn)
+    second = run_loop(f, period=(START, END), cfg=_cfg(), mem=mem, run_fn=run_fn, allow_stale=True)
 
     assert first["stale"] is False
     assert second["stale"] is True
-    assert second["hypothesis_id"] != first["hypothesis_id"]  # ran anyway, fully recorded
+    assert second["hypothesis_id"] != first["hypothesis_id"]  # allowed override fully records
     assert mem.stats()["counts"]["verdicts"] == 2
 
 

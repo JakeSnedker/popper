@@ -31,6 +31,15 @@ def strip_fence(text: str) -> str:
     return (m.group(1) if m else text).strip()
 
 
+def _extract_text(payload: dict) -> str:
+    """Anthropic content can contain multiple block types; use every text block."""
+    blocks = payload.get("content", [])
+    text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict) and "text" in b).strip()
+    if text:
+        return text
+    raise RuntimeError(f"Anthropic response contained no text block: {json.dumps(payload)[:500]}")
+
+
 class AnthropicClient:
     """Anthropic Messages API via stdlib urllib. Key from settings or env."""
 
@@ -52,7 +61,7 @@ class AnthropicClient:
             "content-type": "application/json",
         })
         with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 (fixed host)
-            return json.load(resp)["content"][0]["text"]
+            return _extract_text(json.load(resp))
 
 
 class StubLLM:
