@@ -110,10 +110,15 @@ def evaluate(
     sc, v = judge(spec, run_fn=run_fn, period=period, cfg=cfg, mem=mem, bars=bars, costs=costs)
 
     exp = anchor_experiment(mem, h.id, sc.experiment_id)
+    if bars is None and run_fn is run:
+        # thread the SAME frame the anchor ran on so trade entry_i/exit_i align and
+        # C3 regime conditioning fires on real runs. load_bars is lru_cached on these
+        # exact args -> the anchor already loaded it -> cache hit, no second read.
+        from popper.data import load_bars
+        from popper.experiments.runner import _tf_to_mt5
+        start, end = period or (None, None)
+        bars = load_bars(spec.context.universe[0], _tf_to_mt5(spec.context.timeframe), start, end)
     complete_scorecard(sc, mem, h, exp, bars=bars)  # novelty/correlation/regime/behaviour in place
-    # ponytail: real-regime conditioning fires only when a caller passes bars (offline
-    # runs, manual loop). The real US30 runner loads bars internally, so evaluate's bars
-    # is None there -> crude chunk fallback; thread loaded bars through if that matters.
     sc = mem.add_scorecard(sc)
     v = mem.add_verdict(v)
 
