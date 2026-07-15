@@ -115,10 +115,14 @@ replicating a shaky base across 3 machines.
    *populated* book — a US30 run (LLM-driven or seeded) that yields ≥1 cost-surviving edge into
    `book_from_mem`; and optionally collect rescued net-positive variants into the candidate pool
    inline (today `book_from_mem` already finds them in the map post-run).
-2. **Single shared DB + visualize.** Flip `store: supabase`, point everything at one Supabase project
-   so all runs/verdicts/scorecards land in one place. **First prove `SupabaseMemory` with one real
-   round-trip** (it has 15 methods, `[TODO]` zero tests). Confirm the FastAPI dashboard (`/api/*`,
-   already reads `get_memory()`) renders the shared map adequately; fill gaps if not.
+2. **Single shared DB + visualize.** Flip `store: supabase`, point everything at one Supabase project.
+   **Audit done (2026-07-15):** `SupabaseMemory` was built to the OLD schema — missing
+   add_research_event/list_research_events/add_feature_gap/list_feature_gaps AND the research_events +
+   feature_gaps tables → **it crashed every real run**. Fixed: methods + migration + an offline parity
+   test (test_memory_parity) so this drift can't recur. Known ceiling: COUNT+1 ids race under
+   concurrent multi-machine writes (loud, low-severity at cron scale; upgrade = Postgres sequence or
+   instrument-namespaced ids). **`[HUMAN]` remaining:** run `scripts/supabase_roundtrip.py` with creds
+   to prove the live round-trip; then confirm the FastAPI dashboard (`/api/*`) renders the shared map.
 3. **Expand the DSL (reasonably).** `[TODO]` More alpha primitives / wrapper types / features — enough
    to give the hunt real room, without blowing scope. Bounded, additive, each addition keeps the
    gauntlet green. (Refine still never mutates the alpha; a richer alpha vocabulary is explore's gain.)
