@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from popper.agents import propose, screen, synthesize, view
 from popper.artifacts import StrategySpec
 from popper.dsl import DSLValidationError
-from popper.experiments.runner import run
+from popper.experiments.runner import bars_for_spec, run
 from popper.feature_gaps import record_feature_gaps
 from popper.falsify import GauntletConfig
 from popper.memory import complete_scorecard, get_memory
@@ -183,7 +183,8 @@ def _worker_refine(mem, spec: StrategySpec, run_fn, period, cfg,
     sc, v = judge(variant, run_fn=run_fn, period=period, cfg=cfg, mem=mem)
     exp = anchor_experiment(mem, variant.hypothesis_id, sc.experiment_id)
     h = mem.get_hypothesis(variant.hypothesis_id)
-    complete_scorecard(sc, mem, h, exp)
+    bars = bars_for_spec(variant, period) if run_fn is run else None  # real regime score on the exploit path too
+    complete_scorecard(sc, mem, h, exp, bars=bars)
     mem.add_scorecard(sc)
     mem.add_verdict(v)
     _event(mem, run_id, iteration, engine, "worker", "refine", v.type.value,

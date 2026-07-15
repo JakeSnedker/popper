@@ -171,6 +171,16 @@ def run(
     return exp
 
 
+def bars_for_spec(spec: StrategySpec, period: tuple[str | None, str | None] | None = None):
+    """The exact bar frame run() loads for this spec+period — lru-cached, so calling
+    it after a judge/backtest is a cache hit, not a second read. Used to thread real
+    bars into complete_scorecard so C3 regime conditioning fires on live runs
+    (explore AND exploit paths). Callers gate on `run_fn is run` (synthetic runners
+    must NOT pull real parquet)."""
+    start, end = period or (None, None)
+    return load_bars(spec.context.universe[0], _tf_to_mt5(spec.context.timeframe), start, end)
+
+
 def _tf_to_mt5(tf: str) -> str:
     """'5m' -> 'M5'. Passes through if already MT5-style."""
     tf = tf.strip()
