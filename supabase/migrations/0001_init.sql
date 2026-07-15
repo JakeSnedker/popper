@@ -71,3 +71,35 @@ create index if not exists idx_hypotheses_status on hypotheses(status);
 create index if not exists idx_specs_hypothesis on specs(hypothesis_id);
 create index if not exists idx_experiments_spec on experiments(spec_id);
 create index if not exists idx_verdicts_hypothesis on verdicts(hypothesis_id);
+
+-- research_events: the Director logs one row per step (drives the dashboard timeline).
+-- feature_gaps: DSL validation misses, deduped on (name, kind). Both were missing —
+-- a real Director run against Supabase crashed on the first add_research_event.
+create table if not exists feature_gaps (
+    id           text primary key,
+    name         text,
+    kind         text,
+    source       text,
+    detail       text,
+    examples     jsonb default '[]',
+    count        integer default 1,
+    status       text default 'open',
+    created_at   timestamptz default now(),
+    updated_at   timestamptz default now()
+);
+create unique index if not exists idx_feature_gaps_name_kind on feature_gaps(name, kind);
+
+create table if not exists research_events (
+    id           text primary key,
+    run_id       text,
+    iteration    integer,
+    engine       text,
+    role         text,
+    stage        text,
+    status       text,
+    message      text,
+    artifact_ids jsonb default '{}',
+    payload      jsonb default '{}',
+    created_at   timestamptz default now()
+);
+create index if not exists idx_research_events_run_created on research_events(run_id, created_at);
