@@ -64,10 +64,15 @@ built in from the first line, never bolted on.
   is dismissed only after every found alpha is refined (`refined_ids`); a new near-miss revives it.
   Honest boundary: refine bounds the *alpha space* to what explore proposes + near-misses rescued —
   right shape at hundreds-of-alphas scale, not millions.
-- **B-GAP — rescue unexercised on real data.** `[TODO]` The B2 rescue is unit-tested and smoke-proven
-  on a *hand-built* cost-killed near-miss only. **Not yet shown that a real US30 hunt produces a real
-  cost-killed edge that the exploit engine actually recovers end-to-end.** This is the core of "strong
-  US30 base" below.
+- **B-GAP — rescue proven on real data.** `[DONE+TEST]` (commit + test_optimizer `_accept`). Real US30
+  M5 probe found a genuine cost-killed edge (`ny_open_momentum`: gross +0.063R, net −0.017R,
+  param-stability 0.965, positive in every vol regime). The rescue **failed** at first — acceptance
+  required verdict∈survive on every step, so a cost-killed edge that can't reach survivor in one move
+  never climbed. **Fix:** `_accept` decouples the hill-climb from the survivor gate — accept on net_E
+  improving + overfitting guards; only require survivor status when refining an already-surviving seed.
+  **Result: net −0.017R → +0.149R** via `sl_atr+`/`rr+`/`trail_on`/`or_min+` (the cost levers). Honest
+  nuance: net-positive but still verdict=kill (thin gross edge) → it's a **portfolio candidate (D2)**,
+  not a standalone promote.
 
 ## Phase C — Regime awareness
 
@@ -84,9 +89,13 @@ built in from the first line, never bolted on.
 
 - **D1 — Correlation as a first-class metric.** `[DONE+TEST]` (test_correlation, 5). Signed-Pearson
   `diversification_score = (1 − max signed corr)/2`.
-- **D2 — Portfolio constructor:** `[TODO]` pick the uncorrelated, regime-diversified subset that
-  maximizes *combined* risk-adjusted return. **Friction becomes a hard requirement here** (promotion gate).
-- **D3 — Output = the candidate bot:** `[TODO]` edges + weights + regime rules, deployable.
+- **D2 — Portfolio constructor:** `[DONE+TEST]` (test_portfolio, 2). `build_book`: **friction HARD-GATE
+  lives here** (expectancy_net>0; no net metric = ineligible) + robustness (pbo/param-stability) +
+  greedy signed-correlation de-dup (≤ max_corr) + inverse-vol weights. This is the *different* gate
+  from single-edge promotion — a thin net-positive edge (the rescued ny_open) earns a book slot.
+- **D3 — Output = the candidate bot:** `[DONE+TEST]` book = edges + weights + regime rules + combined
+  stats + rejected-with-reasons. `book_from_mem(mem)` pulls candidates from the map so a run outputs a
+  book. *Not yet a POPULATED real book — needs a real US30 run with cost metrics (step 4) or an LLM run.*
 
 ## Phase E — Point it at JJC and hunt
 
@@ -100,10 +109,12 @@ built in from the first line, never bolted on.
 Ordered. Each rung must hold before the next. Multi-instrument expansion is LAST — no point
 replicating a shaky base across 3 machines.
 
-1. **Strong US30 base (A / current).** Real US30 Director hunt that proves the loop end-to-end on real
-   data — specifically **B-GAP**: a real cost-killed near-miss gets rescued into a survivor, regime
-   report reads sane per-bucket, optimizer shows real refine depth. Close D2+D3 so a run outputs an
-   actual candidate book, not just survivors.
+1. **Strong US30 base (A / current).** ✅ *mostly done.* Real US30 M5 probe proved the loop end-to-end:
+   B-GAP rescue works (net −0.017R → +0.149R), regime report reads sane per-bucket, optimizer shows
+   real refine depth, D2/D3 build a book with the friction hard-gate. **Remaining:** one real
+   *populated* book — a US30 run (LLM-driven or seeded) that yields ≥1 cost-surviving edge into
+   `book_from_mem`; and optionally collect rescued net-positive variants into the candidate pool
+   inline (today `book_from_mem` already finds them in the map post-run).
 2. **Single shared DB + visualize.** Flip `store: supabase`, point everything at one Supabase project
    so all runs/verdicts/scorecards land in one place. **First prove `SupabaseMemory` with one real
    round-trip** (it has 15 methods, `[TODO]` zero tests). Confirm the FastAPI dashboard (`/api/*`,
