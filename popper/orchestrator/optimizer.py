@@ -117,6 +117,15 @@ def _wrapper_neighbors(spec) -> list[tuple[str, object]]:
     return out
 
 
+def _accept(obj, best_obj, survived, stable, pbo_ok, require_survive) -> bool:
+    """Hill-climb acceptance. Overfitting guards (parameter-stability, pbo) ALWAYS
+    hold — they're what stop a 'win' from being curve-fit. `require_survive` is
+    True only when refining an already-surviving seed (protect the winner); False
+    when RESCUING a cost-killed kill, so the climb may pass through still-losing-
+    but-improving states toward net>0 (roadmap B2). Objective must strictly improve."""
+    return stable and pbo_ok and (survived or not require_survive) and obj > best_obj
+
+
 def optimize(spec, run_fn=run, period=None, cfg: GauntletConfig | None = None,
              mem=None, max_iters: int = 24):
     """Greedy coordinate search around `spec`: each sweep tries the numeric
@@ -139,17 +148,29 @@ def optimize(spec, run_fn=run, period=None, cfg: GauntletConfig | None = None,
         survived = v.type.value in SURVIVE
         stable = sc.parameter_stability >= t.min_profitable_fraction
         pbo_ok = sc.pbo <= t.max_pbo
-        why = ("ok" if survived and stable and pbo_ok else
-               f"overfit: parameter_stability {sc.parameter_stability} < {t.min_profitable_fraction}"
-               if not stable else f"overfit: pbo {sc.pbo} > {t.max_pbo}"
-               if not pbo_ok else f"verdict {v.type.value}: {'; '.join(v.reasons)}")
-        return obj, key, sc, v, (survived and stable and pbo_ok), why
+        return obj, key, sc, v, survived, stable, pbo_ok
+
+    def _why(sc, v, survived, stable, pbo_ok, obj=None):
+        if not stable:
+            return f"overfit: parameter_stability {sc.parameter_stability} < {t.min_profitable_fraction}"
+        if not pbo_ok:
+            return f"overfit: pbo {sc.pbo} > {t.max_pbo}"
+        if require_survive and not survived:
+            return f"verdict {v.type.value}: {'; '.join(v.reasons)}"
+        if obj is not None and not (obj > best_obj):
+            return f"objective {obj} did not improve on {best_obj}"
+        return "ok"
 
     best = spec
-    best_obj, obj_key, best_sc, best_v, _, why = _eval(spec)
+    best_obj, obj_key, best_sc, best_v, base_survived, base_stable, base_pbo = _eval(spec)
+    # rescue vs refine: only PROTECT an already-surviving seed (require every step
+    # stay a survivor). A cost-killed KILL is allowed to climb through still-losing-
+    # but-improving states toward net>0 — the whole point of B2. Guards always hold.
+    require_survive = base_survived
     history.append({"move": "baseline", "objective": best_obj, "objective_key": obj_key,
                     "verdict": best_v.type.value, "parameter_stability": best_sc.parameter_stability,
-                    "pbo": best_sc.pbo, "accepted": True, "reason": why})
+                    "pbo": best_sc.pbo, "accepted": True,
+                    "reason": _why(best_sc, best_v, base_survived, base_stable, base_pbo)})
 
     movable = _movable(spec)
     evals, moved = 0, True
@@ -165,10 +186,9 @@ def optimize(spec, run_fn=run, period=None, cfg: GauntletConfig | None = None,
                     continue
                 evals += 1
                 moves_tried += 1
-                obj, _, sc, v, robust, why = _eval(cand)
-                accepted = robust and obj > best_obj
-                if robust and not accepted:
-                    why = f"objective {obj} did not improve on {best_obj}"
+                obj, _, sc, v, survived, stable, pbo_ok = _eval(cand)
+                accepted = _accept(obj, best_obj, survived, stable, pbo_ok, require_survive)
+                why = _why(sc, v, survived, stable, pbo_ok, obj)
                 mname = f"{name}{'+' if direction > 0 else '-'}"
                 history.append({"move": mname,
                                 "param": name, "direction": direction,
@@ -188,10 +208,9 @@ def optimize(spec, run_fn=run, period=None, cfg: GauntletConfig | None = None,
                 break
             evals += 1
             moves_tried += 1
-            obj, _, sc, v, robust, why = _eval(cand)
-            accepted = robust and obj > best_obj
-            if robust and not accepted:
-                why = f"objective {obj} did not improve on {best_obj}"
+            obj, _, sc, v, survived, stable, pbo_ok = _eval(cand)
+            accepted = _accept(obj, best_obj, survived, stable, pbo_ok, require_survive)
+            why = _why(sc, v, survived, stable, pbo_ok, obj)
             history.append({"move": mname, "structural": True, "objective": obj,
                             "objective_key": obj_key, "verdict": v.type.value,
                             "parameter_stability": sc.parameter_stability, "pbo": sc.pbo,

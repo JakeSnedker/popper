@@ -193,3 +193,22 @@ def test_done_entry_contract_and_depth_keys():
     assert done["moves_tried"] == done["evals"] > 0
     assert done["moves_accepted"] == 0
     assert done["move_log"] == []
+
+
+def test_accept_rescues_cost_killed_but_protects_survivors():
+    """B2 rescue: a KILL (require_survive=False) accepts an improving, guarded
+    step even while still a non-survivor; a SURVIVOR (require_survive=True) does
+    not walk into a non-survivor. Guards (stable, pbo_ok) always bind."""
+    from popper.orchestrator.optimizer import _accept
+    # rescuing a cost-killed kill: improving + guarded + still-losing -> accept
+    assert _accept(obj=-0.01, best_obj=-0.02, survived=False, stable=True,
+                   pbo_ok=True, require_survive=False)
+    # same step while protecting a survivor -> rejected (would leave survive tier)
+    assert not _accept(obj=-0.01, best_obj=-0.02, survived=False, stable=True,
+                       pbo_ok=True, require_survive=True)
+    # guards always bind: unstable or pbo-blown never accepts, rescue or not
+    assert not _accept(0.5, 0.0, survived=True, stable=False, pbo_ok=True, require_survive=False)
+    assert not _accept(0.5, 0.0, survived=True, stable=True, pbo_ok=False, require_survive=False)
+    # no improvement -> never accept
+    assert not _accept(obj=-0.02, best_obj=-0.02, survived=True, stable=True,
+                       pbo_ok=True, require_survive=False)
