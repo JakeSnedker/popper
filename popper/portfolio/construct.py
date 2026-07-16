@@ -55,10 +55,11 @@ def build_book(candidates: list[dict], cfg: GauntletConfig | None = None,
     # best net edge first; greedily add the next whose signed corr to EVERY
     # selected member stays within max_corr (one redundant overlap disqualifies).
     eligible.sort(key=lambda c: c["metrics"]["expectancy_net"], reverse=True)
+    common_n = max((c["n_bars"] for c in eligible), default=0)  # align streams so corr is valid
     selected: list[dict] = []
     streams: list[np.ndarray] = []
     for c in eligible:
-        s = return_stream(c["trades"], c["n_bars"])
+        s = return_stream(c["trades"], common_n)
         if all(_pearson(s, prev) <= max_corr for prev in streams):
             selected.append(c)
             streams.append(s)
@@ -103,7 +104,10 @@ def candidates_from_mem(mem, hypothesis_ids: list[str] | None = None) -> list[di
             out.append({
                 "spec_id": e["spec_id"],
                 "trades": trades,
-                "n_bars": len(e.get("equity_curve") or []) or max(t["exit_i"] for t in trades) + 1,
+                # n_bars = the bar span the trades cover. NOT len(equity_curve) — that
+                # curve is per-TRADE, so its length << bar indices and every trade would
+                # fall outside return_stream's range (zeroed -> std 0 -> weight 0).
+                "n_bars": max(t["exit_i"] for t in trades) + 1,
                 "metrics": {"expectancy_net": m.get("expectancy_net"), "expectancy": m.get("expectancy")},
                 "scorecard": {"pbo": sc.get("pbo"), "parameter_stability": sc.get("parameter_stability")},
             })

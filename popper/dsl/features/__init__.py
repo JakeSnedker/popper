@@ -179,6 +179,18 @@ def _swing_pivots(bars: pd.DataFrame, lookback: int = SWING_LOOKBACK) -> tuple[p
     return pd.Series(ch, index=bars.index), pd.Series(cl, index=bars.index)
 
 
+def fib_pos(bars: pd.DataFrame) -> pd.Series:
+    """Position of close within the last CONFIRMED swing range, as a fraction:
+    0 at the swing low, 1 at the swing high (can exceed [0,1] on a break-out).
+    Retracement zones are trivial comparisons on this one primitive — a 0.618
+    pullback in an up-leg is `fib_pos > 0.5 AND fib_pos < 0.7`. Uses the shared
+    forward-only pivots (confirmed `SWING_LOOKBACK` bars after they form), so
+    prefix-invariant. NaN until both a swing high and low exist."""
+    ch, cl = _swing_pivots(bars)
+    span = (ch - cl).replace(0, np.nan)
+    return (bars["close"] - cl) / span
+
+
 def fvg(bars: pd.DataFrame) -> pd.Series:
     """Fair Value Gap PRESENCE: +1 bullish 3-bar gap (high[i-2] < low[i]),
     -1 bearish (low[i-2] > high[i]), else 0.
@@ -368,6 +380,7 @@ def cusum_shift(bars: pd.DataFrame, vol_n: int = CUSUM_VOL_N,
 # imported here (not at top) because regime.py needs atr_14/ema from this
 # module — same partial-init pattern levels.py uses.
 from popper.dsl.features.regime import trend_regime, vol_regime  # noqa: E402
+from popper.dsl.features.flow import body_pressure, delta_proxy, rel_volume  # noqa: E402
 
 _EXACT = {
     "atr_14": atr_14,
@@ -381,6 +394,11 @@ _EXACT = {
     "psar": psar,
     "liquidity_sweep": liquidity_sweep,
     "candle_size": candle_size,
+    # step-3 alpha expansion: fib retracement + volume/order-flow proxies (flow.py)
+    "fib_pos": fib_pos,
+    "rel_volume": rel_volume,
+    "delta_proxy": delta_proxy,
+    "body_pressure": body_pressure,
     # SMC pack (docs/spec/FEATURE_ADMISSION.md)
     "fvg": fvg,
     "bos": bos,
