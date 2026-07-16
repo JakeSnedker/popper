@@ -4,6 +4,7 @@ import type {
   Hypothesis,
   FeatureGap,
   MapResponse,
+  MonteCarloCone,
   PhasesResponse,
   ResearchRunRequest,
   ResearchEvent,
@@ -51,6 +52,8 @@ export const api = {
     ),
   record: (id: string) => get<HypothesisRecord>(`/api/hypotheses/${id}`),
   map: () => get<MapResponse>("/api/map"),
+  mcCone: (id: string) =>
+    get<MonteCarloCone>(`/api/hypotheses/${encodeURIComponent(id)}/mc-cone`),
   verdicts: (limit = 20) => get<{ verdicts: VerdictFeedItem[] }>(`/api/verdicts?limit=${limit}`),
   timeline: (id: string) =>
     get<{ experiments: TimelinePoint[] }>(`/api/timeline?hypothesis_id=${encodeURIComponent(id)}`),

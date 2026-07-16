@@ -13,6 +13,7 @@ from popper.architecture import architecture
 from popper.artifacts import Hypothesis, HypothesisStatus
 from popper.config import settings
 from popper.falsify import GauntletConfig
+from popper.falsify.stats import bootstrap_cone
 from popper.memory import get_memory
 from popper.memory.map import edge_type
 from popper.orchestrator import run_research
@@ -186,6 +187,30 @@ def recent_verdicts(limit: int = 20) -> dict:
             })
     rows.sort(key=lambda r: r["created_at"], reverse=True)
     return {"verdicts": rows[:limit]}
+
+
+@app.get("/api/hypotheses/{hypothesis_id}/mc-cone")
+def get_mc_cone(hypothesis_id: str) -> dict:
+    """Bootstrap Monte Carlo risk cone for an alpha's best experiment. Picks the
+    experiment with the longest usable equity curve (some legacy runs stored a
+    truncated curve; the bootstrap needs the real per-trade path)."""
+    rec = get_memory().record(hypothesis_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="hypothesis not found")
+    best = None  # (experiment, curve)
+    for e in rec["experiments"]:
+        curve = e.get("equity_curve") or []
+        if len(curve) > (len(best[1]) if best else 30):
+            best = (e, curve)
+    if not best:
+        raise HTTPException(status_code=404, detail="no experiment with a usable equity curve yet")
+    exp, curve = best
+    cone = bootstrap_cone(curve)
+    if cone is None:
+        raise HTTPException(status_code=404, detail="equity curve unusable (non-positive or too short)")
+    verdict = next((v["type"] for v in rec["verdicts"] if v["experiment_id"] == exp["id"]), None)
+    cone.update({"experiment_id": exp["id"], "verdict": verdict, "trades_n": exp["trades_n"]})
+    return cone
 
 
 @app.get("/api/timeline")

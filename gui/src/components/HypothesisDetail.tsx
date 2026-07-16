@@ -3,6 +3,7 @@ import { api } from "../api";
 import { useAsync } from "../lib/useAsync";
 import { FalsificationBreakdown } from "./FalsificationBreakdown";
 import { ImprovementChart } from "./ImprovementChart";
+import { MonteCarloCone } from "./MonteCarloCone";
 import { ScorecardView } from "./ScorecardView";
 import { StatusBadge, VerdictBadge } from "./StatusBadge";
 import { ErrorState, LoadingRows } from "./States";
@@ -110,6 +111,12 @@ export function HypothesisDetail({ id, onClose }: { id: string; onClose: () => v
               {data.experiments.length > 0 && (
                 <Section title="Alpha improvement (refinement trend)">
                   <ImprovementChart hypothesisId={id} />
+                </Section>
+              )}
+
+              {data.experiments.length > 0 && (
+                <Section title="Monte Carlo · risk cone (bootstrap)">
+                  <MonteCarloCone hypothesisId={id} />
                 </Section>
               )}
 

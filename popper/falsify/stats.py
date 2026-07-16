@@ -16,6 +16,8 @@ import random
 from itertools import combinations
 from statistics import NormalDist
 
+import numpy as np
+
 _N = NormalDist()
 
 
@@ -142,6 +144,52 @@ def pbo_cscv(perf_matrix: list[list[float]], s: int = 8) -> float:
         w = min(max(w, 1e-6), 1 - 1e-6)
         logits.append(math.log(w / (1 - w)))
     return sum(1 for lam in logits if lam <= 0) / len(logits)
+
+
+# --- ADD: bootstrap equity cone (viz) ---
+def bootstrap_cone(equity, n_sims: int = 1500, steps: int = 170, n_sample: int = 40,
+                   ruin_dd: float = 0.10, seed: int = 42) -> dict | None:
+    """Bootstrap Monte Carlo equity cone from a realized equity curve.
+
+    Resamples per-trade increments WITH replacement, so both the path AND the
+    final equity vary — which makes P(profit) meaningful (a pure order-shuffle
+    can't: compounding is commutative, so every shuffle ends at the same equity).
+    Returns JSON-ready percentile bands + a sample of paths + the realized path +
+    profit/ruin/drawdown distributions, or None if the curve is unusable (too
+    short, non-positive, or NaN — e.g. a strategy that hit ruin, or a legacy
+    truncated curve)."""
+    eq = np.asarray(equity, dtype=float)
+    if eq.size < 3 or (eq <= 0).any() or np.isnan(eq).any():
+        return None
+    incr = eq[1:] / eq[:-1] - 1.0
+    n = incr.size
+    rng = np.random.default_rng(seed)
+
+    draws = rng.choice(incr, size=(n_sims, n), replace=True)
+    paths = np.empty((n_sims, n + 1)); paths[:, 0] = 1.0
+    np.cumprod(1.0 + draws, axis=1, out=paths[:, 1:])
+    peak = np.maximum.accumulate(paths, axis=1)
+    maxdd = np.max((peak - paths) / peak, axis=1)
+    finals = paths[:, -1]
+
+    xs = np.linspace(0, n, steps, dtype=int)
+    sub = paths[:, xs]
+    pick = rng.choice(n_sims, min(n_sample, n_sims), replace=False)
+    return {
+        "n": int(n),
+        "xs": xs.tolist(),
+        "band": {str(p): np.percentile(sub, p, axis=0).round(5).tolist()
+                 for p in (5, 25, 50, 75, 95)},
+        "spaghetti": sub[pick].round(5).tolist(),
+        "realized": eq[xs].round(5).tolist(),
+        "p_profit": round(float(np.mean(finals > 1.0)), 4),
+        "p_ruin": round(float(np.mean(maxdd > ruin_dd)), 4),
+        "dd_med": round(float(np.median(maxdd)), 4),
+        "dd_95": round(float(np.percentile(maxdd, 95)), 4),
+        "final_med": round(float(np.median(finals)), 4),
+        "final_real": round(float(eq[-1]), 4),
+        "ruin_dd": ruin_dd,
+    }
 
 
 # --- ADD: purged & embargoed K-fold (LdP) ---

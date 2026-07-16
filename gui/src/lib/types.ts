@@ -155,6 +155,25 @@ export interface HypothesisRecord {
   verdicts: Verdict[];
 }
 
+/** Bootstrap Monte Carlo risk cone for one alpha (from /api/hypotheses/{id}/mc-cone). */
+export interface MonteCarloCone {
+  n: number;
+  xs: number[];
+  band: Record<string, number[]>; // percentile keys "5" "25" "50" "75" "95"
+  spaghetti: number[][];
+  realized: number[];
+  p_profit: number;
+  p_ruin: number;
+  dd_med: number;
+  dd_95: number;
+  final_med: number;
+  final_real: number;
+  ruin_dd: number;
+  experiment_id: string;
+  verdict: VerdictType | null;
+  trades_n: number;
+}
+
 export interface Phase {
   id: number;
   name: string;
