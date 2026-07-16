@@ -1,0 +1,24 @@
+# Flow-confirmed momentum: trend continuation only when the bar shows real
+# participation (rel_volume expansion) AND buyers won the bar (body_pressure).
+# rel_volume / body_pressure are HONEST OHLCV proxies (flow.py), not Level-2.
+name: flow_confirmed_momentum
+hypothesis_id: H-FLOW-MOM
+alpha:
+  features: [ema_50, rel_volume, body_pressure]
+  signal: "close > ema_50 AND rel_volume > p[vol_mult] AND body_pressure > p[bp_min]"
+  signal_short: "close < ema_50 AND rel_volume > p[vol_mult] AND body_pressure < 0 - p[bp_min]"
+wrapper:
+  entry: { type: market }
+  stop: { type: atr, mult: 1.5 }
+  target: { type: rr, ratio: 2.0 }
+  trail: { type: none }
+  break_even: { type: none }
+  sizing: { risk_pct: 0.5 }
+  constraints: { max_trades_per_day: 3 }
+context:
+  universe: [US30]
+  timeframe: 5m
+  cost_model: systematic
+param_space:
+  vol_mult: [1.2, 1.5, 2.0]
+  bp_min: [0.3, 0.5]

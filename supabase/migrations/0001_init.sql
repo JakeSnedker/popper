@@ -54,6 +54,7 @@ create table if not exists scorecards (
     correlation         double precision default 0,
     deflated_sharpe     double precision default 0,
     pbo                 double precision default 1,
+    diagnostics         jsonb default '{}',
     behaviour_signature jsonb default '{}',
     created_at          timestamptz default now()
 );

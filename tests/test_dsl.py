@@ -32,10 +32,12 @@ def synth_bars(n: int = 3000, seed: int = 7) -> pd.DataFrame:
     })
 
 
-# --- DONE-WHEN: the 3 hand-authored examples validate + compile + run ---
+# --- DONE-WHEN: the hand-authored examples validate + compile + run ---
 
-def test_three_examples_exist():
-    assert len(EXAMPLES) == 3
+def test_canonical_examples_exist():
+    stems = {p.stem for p in EXAMPLES}
+    assert {"jjc_trendeng_baseline", "ny_open_momentum", "sweep_reversal",
+            "flow_confirmed_momentum", "fib_pullback_continuation"} <= stems
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.stem)

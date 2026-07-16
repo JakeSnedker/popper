@@ -1,0 +1,25 @@
+# Fib-retracement continuation: in an up-trend, buy when price sits in the
+# retracement zone of the last confirmed swing leg (fib_pos between p[fib_lo]
+# and p[fib_hi]) and signed-volume flow agrees (delta_proxy > 0 — an OHLCV
+# proxy for tick delta, not real order flow).
+name: fib_pullback_continuation
+hypothesis_id: H-FIB-PULLBACK
+alpha:
+  features: [ema_50, fib_pos, delta_proxy]
+  signal: "close > ema_50 AND fib_pos > p[fib_lo] AND fib_pos < p[fib_hi] AND delta_proxy > 0"
+  signal_short: "close < ema_50 AND fib_pos < 1 - p[fib_lo] AND fib_pos > 1 - p[fib_hi] AND delta_proxy < 0"
+wrapper:
+  entry: { type: market }
+  stop: { type: atr, mult: 2.0 }
+  target: { type: rr, ratio: 2.0 }
+  trail: { type: none }
+  break_even: { type: none }
+  sizing: { risk_pct: 0.5 }
+  constraints: { max_trades_per_day: 3 }
+context:
+  universe: [US30]
+  timeframe: 5m
+  cost_model: systematic
+param_space:
+  fib_lo: [0.3, 0.5]
+  fib_hi: [0.6, 0.7]
