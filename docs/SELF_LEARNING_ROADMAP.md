@@ -123,9 +123,18 @@ replicating a shaky base across 3 machines.
    concurrent multi-machine writes (loud, low-severity at cron scale; upgrade = Postgres sequence or
    instrument-namespaced ids). **`[HUMAN]` remaining:** run `scripts/supabase_roundtrip.py` with creds
    to prove the live round-trip; then confirm the FastAPI dashboard (`/api/*`) renders the shared map.
-3. **Expand the DSL (reasonably).** `[TODO]` More alpha primitives / wrapper types / features — enough
-   to give the hunt real room, without blowing scope. Bounded, additive, each addition keeps the
-   gauntlet green. (Refine still never mutates the alpha; a richer alpha vocabulary is explore's gain.)
+3. **Expand the DSL (reasonably).** Bounded, additive, gauntlet stays green. Jake's steer: **alpha
+   first, a handful; no fake signals for data we don't have.**
+   - **Alpha (DONE 2026-07-15):** `fib_pos` (Fibonacci retracement position), `rel_volume`,
+     `delta_proxy` + `body_pressure` (HONEST order-flow PROXIES — candle direction & body/range, NOT
+     real L2; swap data source if a DOM feed is wired). All PIT-correct.
+   - **Wrapper/exits — OVERLAP AUDIT (2026-07-15), deprioritized, driven by E1:** the DSL wrapper is a
+     strict SUBSET of JJC trade-mgmt (1 BE vs ~11, 1 trail vs ~15) → **no overlap risk, only gaps**.
+     Entry-time filtering already lives in the ALPHA (session_ny/opening_range) → do NOT add wrapper
+     time-of-day entry rules (that overlaps). Real GAPS to port from JJC (into `Constraints`):
+     **session-end flatten, end-of-day flatten** (derivable from bar timestamps — buildable) and
+     **news avoidance / close-into-news** (needs an economic-calendar feed we DON'T have — FLAG, don't
+     fake, same rule as L2). Port exactly the JJC rules a real E1 spec needs, no more.
 4. **Run live ~1 month.** `[HUMAN]` Cron the US30 hunt, let it accumulate, read what it spits out.
    This is E2 in practice and the real "is there an edge" test.
 5. **Containerize.** `[TODO]` `Dockerfile` + `POPPER_MEMORY=supabase` + `RUNNING.md` + cron wrapper.
