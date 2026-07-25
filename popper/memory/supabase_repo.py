@@ -14,12 +14,14 @@ from popper.artifacts import (
     Verdict,
 )
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from popper.config import settings
 from popper.memory.base import AlphaMemory
 
 _PREFIX = {"hypotheses": "H", "specs": "S", "experiments": "E", "scorecards": "SC",
            "verdicts": "V", "research_events": "RE", "feature_gaps": "FG"}
+_ID_RETRIES = 15  # recompute-and-retry attempts on the id PK race (many concurrent writers)
 
 
 class SupabaseMemory(AlphaMemory):
@@ -33,19 +35,39 @@ class SupabaseMemory(AlphaMemory):
         self.client = create_client(settings.supabase_url, settings.supabase_key)
 
     def _next_id(self, table: str) -> str:
-        # ponytail: COUNT+1 ids race under concurrent writers — with 3 machines on one
-        # shared DB, two simultaneous inserts can pick the same id and the second fails
-        # the text PK (loud, non-corrupting: the Director drops that candidate + reports).
-        # LOW severity at periodic-cron scale. Upgrade path if throughput bites: a Postgres
-        # identity/sequence per table, or namespace ids by instrument (US30-/NAS-/DAX-).
-        res = self.client.table(table).select("id", count="exact").execute()
-        return f"{_PREFIX[table]}-{(res.count or 0) + 1:04d}"
+        # Highest existing id + 1, via ORDER BY id DESC LIMIT 1 — NOT select-all-then-max
+        # (PostgREST caps a SELECT at 1000 rows, so once a table passes 1000 the scanned
+        # max is wrong and every insert collides) and NOT count+1 (ids go non-contiguous
+        # after any delete). _insert_row's retry handles the concurrent-writer race on top.
+        # ponytail: 4-digit zero-pad => lexical order == numeric up to 9999 rows/table;
+        # past that, widen the pad or move to a Postgres identity/sequence.
+        res = self.client.table(table).select("id").order("id", desc=True).limit(1).execute().data
+        mx = 0
+        if res:
+            try:
+                mx = int(str(res[0]["id"]).rsplit("-", 1)[-1])
+            except (ValueError, KeyError, TypeError):
+                mx = 0
+        return f"{_PREFIX[table]}-{mx + 1:04d}"
+
+    def _insert_row(self, table: str, row: dict) -> str:
+        """Insert `row` (no 'id' key) under a random uuid id. Sequential COUNT/MAX
+        ids need a read-before-write that both caps at PostgREST's 1000-row SELECT
+        AND collides under concurrent writers; a uuid needs neither — it scales to
+        any number of parallel workers writing one shared DB with zero coordination.
+        ponytail: ids are no longer human-sequential (H-9f2c… not H-0007); nothing
+        parses them (FKs are opaque text, the map keys by id), so it's a pure win here."""
+        rid = f"{_PREFIX[table]}-{uuid4().hex[:12]}"
+        self.client.table(table).insert({**row, "id": rid}).execute()
+        return rid
 
     def _insert(self, table: str, model):
-        if model.id is None:
-            model = model.model_copy(update={"id": self._next_id(table)})
-        self.client.table(table).insert(model.model_dump(mode="json")).execute()
-        return model
+        if model.id is not None:
+            self.client.table(table).insert(model.model_dump(mode="json")).execute()
+            return model
+        row = model.model_dump(mode="json")
+        row.pop("id", None)
+        return model.model_copy(update={"id": self._insert_row(table, row)})
 
     def add_hypothesis(self, h: Hypothesis) -> Hypothesis:
         return self._insert("hypotheses", self._enrich(h))
@@ -110,8 +132,12 @@ class SupabaseMemory(AlphaMemory):
         return {"hypotheses_by_status": by_status, "counts": counts}
 
     def add_research_event(self, event: dict) -> dict:
-        row = {"id": self._next_id("research_events"), "artifact_ids": {}, "payload": {}, **event}
-        self.client.table("research_events").insert(row).execute()  # created_at = db default
+        # research_events is append-only, high-volume (one+ per Director step) and its id
+        # is never an FK target -> a random id sidesteps the counter entirely: no 1000-row
+        # SELECT cap, no read-before-write, no collision under concurrent writers.
+        rid = f"RE-{uuid4().hex[:12]}"
+        row = {"artifact_ids": {}, "payload": {}, **event, "id": rid}  # created_at = db default
+        self.client.table("research_events").insert(row).execute()
         return row
 
     def list_research_events(self, run_id: str | None = None, limit: int = 100) -> list[dict]:
@@ -135,11 +161,11 @@ class SupabaseMemory(AlphaMemory):
                  "count": (row.get("count") or 0) + 1, "updated_at": now}
             ).eq("id", row["id"]).execute()
             return self.client.table("feature_gaps").select("*").eq("id", row["id"]).execute().data[0]
-        row = {"id": self._next_id("feature_gaps"), "name": name, "kind": kind, "source": source,
+        row = {"name": name, "kind": kind, "source": source,
                "detail": detail, "examples": [example] if example else [], "count": 1,
                "status": "open", "updated_at": now}
-        self.client.table("feature_gaps").insert(row).execute()
-        return row
+        rid = self._insert_row("feature_gaps", row)
+        return {"id": rid, **row}
 
     def list_feature_gaps(self, status: str | None = None, limit: int = 50) -> list[dict]:
         q = self.client.table("feature_gaps").select("*")

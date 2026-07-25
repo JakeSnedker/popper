@@ -44,7 +44,7 @@ if (-not (Test-Path (Join-Path $root "gui\node_modules"))) {
 # 4. Launch API (background window)
 Write-Host "Starting API on http://127.0.0.1:8000 ..." -ForegroundColor Green
 Start-Process -FilePath $py `
-    -ArgumentList "-m", "uvicorn", "popper.api.main:app", "--host", "127.0.0.1", "--port", "8000" `
+    -ArgumentList "-m", "uvicorn", "popper.api.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload" `
     -WorkingDirectory $root -WindowStyle Minimized
 
 # 5. Launch dashboard (background window)

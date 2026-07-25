@@ -302,6 +302,17 @@ export interface TimelinePoint {
   verdict: VerdictType | null;
 }
 
+export interface DataSource {
+  symbol: string;
+  timeframe: string;
+  rows: number | null;
+}
+
+export interface DataSourcesResponse {
+  data_dir: string;
+  sources: DataSource[];
+}
+
 // app navigation
 export type View =
   | { kind: "home" }

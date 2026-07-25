@@ -6,12 +6,19 @@ generation agents are structurally performance-blind — see views.BlindView.
 
 from popper.agents.gatekeeper import screen
 from popper.agents.hypothesis import propose
-from popper.agents.llm import MODELS, AnthropicClient, StubLLM, strip_fence
+from popper.agents.llm import (
+    MODELS,
+    AnthropicClient,
+    ClaudeCliClient,
+    StubLLM,
+    get_llm,
+    strip_fence,
+)
 from popper.agents.synthesis import synthesize
 from popper.agents.views import BlindView, FullView, MapEntry, view
 
 __all__ = [
     "propose", "synthesize", "screen",
     "view", "BlindView", "FullView", "MapEntry",
-    "MODELS", "AnthropicClient", "StubLLM", "strip_fence",
+    "MODELS", "AnthropicClient", "ClaudeCliClient", "get_llm", "StubLLM", "strip_fence",
 ]

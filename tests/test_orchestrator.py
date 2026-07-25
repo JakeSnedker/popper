@@ -41,6 +41,21 @@ class FailingHypothesisLLM(ScriptedLLM):
         return super().complete(system, prompt, model, max_tokens)
 
 
+class FailingSynthesisLLM(ScriptedLLM):
+    """Hypothesis call succeeds; synthesis call raises — simulates a rate limit
+    (429) landing MID-pipeline, after a claim was generated but before any
+    artifact could be evaluated/persisted."""
+
+    def __init__(self):
+        super().__init__([], [])
+
+    def complete(self, system, prompt, model, max_tokens=1024):
+        self.models.append(model)
+        if "FALSIFIABLE" in system:  # hypothesis agent — return a valid claim
+            return _hyp("momentum persists on US30", "flow", ["ema_10"])
+        raise RuntimeError("provider rate limited (429)")  # synthesis agent
+
+
 def _hyp(claim, mech, feats):
     return json.dumps({"claim": claim, "mechanism": mech, "required_features": feats,
                        "expected_regime": "unknown"})
@@ -137,3 +152,19 @@ def test_candidate_failures_are_non_fatal_and_reported():
                      run_fn=_run_fn_over(_bars_uptrend()), period=(START, END), cfg=_cfg(), iterations=1)
     assert s.skipped == 1
     assert any("provider returned no text block" in f for f in s.failures)
+
+
+def test_llm_failure_persists_no_strategy():
+    """A rate limit / API error must NEVER surface as a killed alpha. Whether it
+    hits the FIRST call (hypothesis) or MID-pipeline (synthesis), the candidate is
+    'skipped' with ZERO persisted artifacts — no hypothesis, no verdict, no phantom
+    point on the map. Locks the loop.py invariant: persistence happens only inside
+    evaluate(), after the gauntlet actually runs."""
+    for llm in (FailingHypothesisLLM(), FailingSynthesisLLM()):
+        mem = _mem()
+        s = run_research(mem=mem, llm=llm, run_fn=_run_fn_over(_bars_uptrend()),
+                         period=(START, END), cfg=_cfg(), iterations=1)
+        assert (s.skipped, s.proposed, s.killed, s.survived) == (1, 0, 0, 0), (type(llm).__name__, s)
+        assert s.failures, "the infra failure must be recorded as a run failure"
+        counts = mem.stats()["counts"]
+        assert counts["hypotheses"] == 0 and counts["verdicts"] == 0, (type(llm).__name__, counts)

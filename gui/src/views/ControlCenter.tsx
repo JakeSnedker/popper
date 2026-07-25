@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Architecture, View } from "../lib/types";
 import { AlphaMap } from "../components/AlphaMap";
+import { DataSources } from "../components/DataSources";
 import { FeatureGaps } from "../components/FeatureGaps";
 import { PipelineMap } from "../components/PipelineMap";
 import { ResearchControls } from "../components/ResearchControls";
@@ -60,8 +61,9 @@ export function ControlCenter({
 
       {/* operator controls */}
       <section className="grid lg:grid-cols-3 gap-4 items-start">
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-2 space-y-4">
           <ResearchControls onRunComplete={setActiveRunId} />
+          <DataSources />
         </div>
         <FeatureGaps />
       </section>

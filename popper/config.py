@@ -16,6 +16,9 @@ class Settings(BaseSettings):
 
     # agents (Phase 6)
     anthropic_api_key: str = ""
+    # LLM backend: "api" (metered Anthropic API, low-latency) or "cli" ($0 via
+    # `claude -p` on the claude.ai subscription — for unattended/cron runs).
+    llm_backend: str = "api"
 
     # default per-trade cost model — INFORMATIONAL, NON-GATING. The gauntlet
     # judges gross (frictionless) edge; these only feed the *_net raw_metrics

@@ -7,7 +7,7 @@ to a fixed win/loss trade book, so the landscape is controlled exactly."""
 from popper.artifacts import ExperimentResult, StrategySpec
 from popper.experiments.runner import compute_metrics
 from popper.falsify import GauntletConfig
-from popper.orchestrator.optimizer import optimize
+from popper.orchestrator.optimizer import _alpha_refs, _refine_kind, optimize
 
 START, END = "2025-01-01", "2026-08-01"
 N = 60  # trades per run, period-independent (honest edge: IS == OOS)
@@ -95,6 +95,21 @@ def test_optimizer_rejects_overfit_spike():
 
     done = hist[-1]
     assert not done["improved"] and done["converged"]
+
+
+# --- anti-overfit tag: refine_kind classifies WHAT the rescue moved ---
+
+def test_refine_kind_classifies_move_log():
+    spec = _spec([2, 3, 4])                      # signal "close > p[x]" -> x is an alpha ref
+    assert _alpha_refs(spec) == {"x"}
+    refs = _alpha_refs(spec)
+    # a grid shift on the entry-referenced param relocates the operating point
+    assert _refine_kind(["x+"], refs) == "threshold_moved"
+    # wrapper toggles/knobs and no-op rescues stay wrapper_only
+    assert _refine_kind(["trail_on", "be_trigger-"], refs) == "wrapper_only"
+    assert _refine_kind([], refs) == "wrapper_only"
+    # a wrapper-side param grid ("rr") the entry never references is wrapper_only
+    assert _refine_kind(["trail_on", "rr+"], refs) == "wrapper_only"
 
 
 # --- objective = expectancy_net when the anchor experiment records it ---

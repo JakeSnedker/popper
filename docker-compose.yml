@@ -1,0 +1,40 @@
+# Popper containerization: a hunt worker that writes to the SHARED Supabase map,
+# and an optional local dashboard to view it.
+#
+#   Worker only (what each operator runs):   docker compose up -d
+#   Worker + dashboard:                      docker compose --profile dashboard up -d
+#   Stop everything:                         docker compose down
+#
+# Both services read secrets/knobs from .env (copy .env.docker.example -> .env).
+
+services:
+  worker:
+    build: .
+    image: popper:latest
+    env_file: .env
+    environment:
+      # Defaults if omitted from .env. Instrument selection is NOT here — it lives in
+      # the strategy specs (universe:[US30]); a operator "does DAX" by dropping DAX
+      # parquet into data/dax/ and pointing the store at the shared map.
+      RUN_MODE: "${RUN_MODE:-llm}"
+      RUN_MINUTES: "${RUN_MINUTES:-60}"
+      RUN_ITERATIONS: "${RUN_ITERATIONS:-12}"
+      RUN_SLEEP: "${RUN_SLEEP:-30}"
+    volumes:
+      - ./data:/app/data:ro        # market parquet — read-only, never baked into image
+    restart: unless-stopped        # this + the entrypoint loop = the "cron"
+
+  # Optional: `docker compose --profile dashboard up -d` to view the shared map at
+  # http://localhost:8000. Only one person needs to run this; everyone sees the same DB.
+  dashboard:
+    build: .
+    image: popper:latest
+    profiles: ["dashboard"]
+    env_file: .env
+    command: >
+      uvicorn docker_serve:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data:ro
+    restart: unless-stopped

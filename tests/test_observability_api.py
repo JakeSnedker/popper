@@ -173,3 +173,18 @@ def test_research_events_endpoint(client):
     assert rows[0]["role"] == "hypothesis"
     assert rows[0]["artifact_ids"] == {"hypothesis_id": ids["h1"]}
     assert rows[0]["payload"] == {"novelty": 0.9}
+
+
+# --- /api/data-sources: only real parquets are offered (no silent path drift) ---
+
+def test_data_sources_lists_only_present_parquets():
+    r = TestClient(app).get("/api/data-sources")
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body["data_dir"], str) and isinstance(body["sources"], list)
+    for s in body["sources"]:
+        assert set(s) == {"symbol", "timeframe", "rows"}
+        assert s["symbol"] and s["timeframe"]  # parsed from <SYM>_<TF>.parquet
+    from popper.data.bars import DATA_DIR
+    if (DATA_DIR / "us30" / "US30_M5.parquet").exists():  # ships in-repo
+        assert any(s["symbol"] == "US30" and s["timeframe"] == "M5" for s in body["sources"])

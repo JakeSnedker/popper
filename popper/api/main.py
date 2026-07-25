@@ -50,6 +50,30 @@ def get_architecture() -> dict:
     return architecture()
 
 
+@app.get("/api/data-sources")
+def data_sources() -> dict:
+    """The market-data parquets THIS machine actually has — the only (symbol,
+    timeframe) pairs a run can legitimately use. The dashboard offers exactly
+    these so nobody points a run at data that isn't here (which otherwise fails
+    deep in the runner). Shows what each Popper instance has access to."""
+    from popper.data.bars import DATA_DIR
+    sources = []
+    if DATA_DIR.exists():
+        for p in sorted(DATA_DIR.glob("*/*.parquet")):
+            stem = p.stem  # e.g. "US30_M5"
+            if "_" not in stem:
+                continue
+            symbol, timeframe = stem.rsplit("_", 1)
+            rows = None
+            try:  # footer-only read; a corrupt file must not 500 the whole list
+                import pyarrow.parquet as pq
+                rows = pq.ParquetFile(p).metadata.num_rows
+            except Exception:  # noqa: BLE001
+                pass
+            sources.append({"symbol": symbol, "timeframe": timeframe, "rows": rows})
+    return {"data_dir": str(DATA_DIR), "sources": sources}
+
+
 @app.get("/api/stats")
 def get_stats() -> dict:
     return get_memory().stats()

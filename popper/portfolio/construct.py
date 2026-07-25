@@ -52,9 +52,13 @@ def build_book(candidates: list[dict], cfg: GauntletConfig | None = None,
         (eligible if ok else rejected).append(
             c if ok else {"spec_id": c.get("spec_id"), "reason": why})
 
-    # best net edge first; greedily add the next whose signed corr to EVERY
-    # selected member stays within max_corr (one redundant overlap disqualifies).
-    eligible.sort(key=lambda c: c["metrics"]["expectancy_net"], reverse=True)
+    # best net edge first, but PREFER the more-defensible rescues: a threshold_moved
+    # edge (an accepted move relocated the entry's operating point) sorts BEHIND
+    # wrapper_only and untagged survivors before net-expectancy breaks the tie. Soft
+    # ordering only — every candidate here already cleared the hard friction+overfit
+    # gate; this never admits or rejects, just orders the greedy de-correlation pass.
+    eligible.sort(key=lambda c: (c.get("refine_kind") == "threshold_moved",
+                                 -c["metrics"]["expectancy_net"]))
     common_n = max((c["n_bars"] for c in eligible), default=0)  # align streams so corr is valid
     selected: list[dict] = []
     streams: list[np.ndarray] = []
@@ -110,6 +114,8 @@ def candidates_from_mem(mem, hypothesis_ids: list[str] | None = None) -> list[di
                 "n_bars": max(t["exit_i"] for t in trades) + 1,
                 "metrics": {"expectancy_net": m.get("expectancy_net"), "expectancy": m.get("expectancy")},
                 "scorecard": {"pbo": sc.get("pbo"), "parameter_stability": sc.get("parameter_stability")},
+                # None for non-rescued survivors (never optimized) -> neutral/best in build_book.
+                "refine_kind": (sc.get("diagnostics") or {}).get("refine_kind"),
             })
     return out
 

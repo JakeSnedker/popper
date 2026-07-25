@@ -9,6 +9,8 @@ venv/
 # Popper
 .env
 *.db
+holiday.log
+supabase/.temp/
 
 # Node / frontend
 node_modules/

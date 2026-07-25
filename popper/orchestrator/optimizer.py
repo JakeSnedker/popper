@@ -23,6 +23,7 @@ there is no scoring path that bypasses falsification.
 
 from popper.artifacts.strategy_spec import BreakEvenRule, TrailRule
 from popper.dsl import DSLValidationError, validate_spec
+from popper.dsl.expr import check_signal
 from popper.experiments.runner import run
 from popper.falsify import GauntletConfig
 from popper.falsify.gauntlet import judge
@@ -115,6 +116,28 @@ def _wrapper_neighbors(spec) -> list[tuple[str, object]]:
             continue  # invalid variant: drop, never crash the search
         out.append((name, cand))
     return out
+
+
+def _alpha_refs(spec) -> set[str]:
+    """param_space keys the ENTRY signal references as p[...] — the operating
+    point of the edge. Reuses the DSL's own extractor (check_signal)."""
+    refs, _ = check_signal(spec.alpha.signal, spec.alpha.features)
+    if spec.alpha.signal_short:
+        r2, _ = check_signal(spec.alpha.signal_short, spec.alpha.features)
+        refs |= r2
+    return refs
+
+
+def _refine_kind(move_log, alpha_refs) -> str:
+    """Tag WHAT a rescue adjusted (docs anti-overfit line-in-the-sand).
+    threshold_moved = at least one accepted grid-shift move ("<name>+"/"<name>-")
+    relocated a param the ENTRY signal references. Everything else (wrapper
+    toggles/knobs, grid shifts on wrapper-only params, no accepted moves) is
+    the more-defensible wrapper_only."""
+    for m in move_log:
+        if m and m[-1] in "+-" and m[:-1] in alpha_refs:
+            return "threshold_moved"
+    return "wrapper_only"
 
 
 def _accept(obj, best_obj, survived, stable, pbo_ok, require_survive) -> bool:
@@ -226,5 +249,6 @@ def optimize(spec, run_fn=run, period=None, cfg: GauntletConfig | None = None,
                     "evals": evals, "improved": best is not spec,
                     "objective": best_obj, "objective_key": obj_key,
                     "moves_tried": moves_tried, "moves_accepted": moves_accepted,
-                    "move_log": move_log})
+                    "move_log": move_log,
+                    "refine_kind": _refine_kind(move_log, _alpha_refs(spec))})
     return best, best_sc, best_v, history

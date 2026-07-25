@@ -86,17 +86,21 @@ def _event(mem, run_id: str, iteration: int, engine: str, role: str, stage: str,
            payload: dict | None = None) -> None:
     if not run_id:
         return
-    mem.add_research_event({
-        "run_id": run_id,
-        "iteration": iteration,
-        "engine": engine,
-        "role": role,
-        "stage": stage,
-        "status": status,
-        "message": message,
-        "artifact_ids": artifact_ids or {},
-        "payload": payload or {},
-    })
+    try:
+        mem.add_research_event({
+            "run_id": run_id,
+            "iteration": iteration,
+            "engine": engine,
+            "role": role,
+            "stage": stage,
+            "status": status,
+            "message": message,
+            "artifact_ids": artifact_ids or {},
+            "payload": payload or {},
+        })
+    except Exception as e:  # noqa: BLE001 — the timeline is observability, not research:
+        # a transient event-log insert failure must NEVER kill an unattended run.
+        print(f"[warn] research-event log dropped ({type(e).__name__}: {e})", flush=True)
 
 
 def _pick(budget: dict, spent: dict) -> str:
@@ -181,6 +185,7 @@ def _worker_refine(mem, spec: StrategySpec, run_fn, period, cfg,
     # ponytail: one extra judge of the winner so its anchor experiment persists
     # under the stored variant id (search candidates are judged memory-free)
     sc, v = judge(variant, run_fn=run_fn, period=period, cfg=cfg, mem=mem)
+    sc.diagnostics["refine_kind"] = history[-1]["refine_kind"]  # book prefers wrapper_only
     exp = anchor_experiment(mem, variant.hypothesis_id, sc.experiment_id)
     h = mem.get_hypothesis(variant.hypothesis_id)
     bars = bars_for_spec(variant, period) if run_fn is run else None  # real regime score on the exploit path too
@@ -291,9 +296,9 @@ def run_research(mem=None, llm=None, run_fn=run, period=None, cfg: GauntletConfi
                  iterations: int = 10, budget: dict | None = None, run_id: str | None = None) -> RunSummary:
     """Unattended research run. Injectable for offline/deterministic testing;
     defaults to the real alpha memory + Anthropic client + US30 runner."""
-    from popper.agents import AnthropicClient
+    from popper.agents import get_llm
     mem = mem or get_memory()
-    llm = llm or AnthropicClient()
+    llm = llm or get_llm()
     budget = budget or dict(DEFAULT_BUDGET)
     run_id = run_id or f"R-{uuid.uuid4().hex[:8]}"
     return asyncio.run(_run(mem, llm, run_fn, period, cfg, iterations, budget, run_id))

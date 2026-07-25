@@ -1,5 +1,6 @@
 import type {
   Architecture,
+  DataSourcesResponse,
   HypothesisRecord,
   Hypothesis,
   FeatureGap,
@@ -39,6 +40,7 @@ export const api = {
   health: () => get<{ ok: boolean; version: string; store: string }>("/api/health"),
   phases: () => get<PhasesResponse>("/api/phases"),
   architecture: () => get<Architecture>("/api/architecture"),
+  dataSources: () => get<DataSourcesResponse>("/api/data-sources"),
   stats: () => get<Stats>("/api/stats"),
   featureGaps: (limit = 12) => get<{ feature_gaps: FeatureGap[] }>(`/api/feature-gaps?limit=${limit}`),
   runResearch: (req: ResearchRunRequest) => post<ResearchRunSummary>("/api/research", req),

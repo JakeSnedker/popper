@@ -1,0 +1,30 @@
+# Secrets — never in an image.
+.env
+*.env
+!.env.docker.example
+
+# Virtualenv / Python cruft
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Market data — large, per-instrument, mounted as a read-only volume instead.
+data/
+
+# Local DB (we write to the shared Supabase map, not a baked sqlite file).
+*.db
+
+# Frontend deps — huge; gui/dist (prebuilt) IS kept so the dashboard can serve it.
+gui/node_modules/
+gui/.vite/
+
+# VCS / OS / editor
+.git/
+.gitignore
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

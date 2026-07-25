@@ -44,6 +44,8 @@ def _load():
     hyps, specs = [], []
     for path in sorted(glob.glob(os.path.join(EX, "*.yaml"))):
         name = os.path.splitext(os.path.basename(path))[0]
+        if name not in _CLAIMS:
+            continue  # only the claimed seed set; newer example specs aren't seeds here
         d = yaml.safe_load(open(path, encoding="utf-8"))
         d.pop("hypothesis_id", None)  # assigned by memory at store time
         feats = d["alpha"]["features"]

@@ -27,6 +27,16 @@ def test_friction_gate_and_decorrelation():
     assert {"costneg", "overfit", "nonet", "clone"} <= rej
 
 
+def test_book_prefers_wrapper_only_over_threshold_moved():
+    # both clear the hard gate and are mutually correlated (same trades), so the
+    # greedy pass keeps only the FIRST — the soft preference must put the more-
+    # defensible wrapper_only ahead even though threshold_moved has the higher net.
+    thr = _cand("thresh", 0.20, 0.3, 0.9, _up()); thr["refine_kind"] = "threshold_moved"
+    wrap = _cand("wrap", 0.15, 0.3, 0.9, _up()); wrap["refine_kind"] = "wrapper_only"
+    book = build_book([thr, wrap])
+    assert [e["spec_id"] for e in book["edges"]] == ["wrap"]
+
+
 def test_empty_when_all_fail_friction():
     book = build_book([_cand("x", -0.1, 0.3, 0.9, _up())])
     assert book["n_selected"] == 0 and book["edges"] == []
