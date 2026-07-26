@@ -2,6 +2,7 @@
 (PCA-projected points + whitespace), the recent-verdict stream (newest-first),
 and per-hypothesis experiment timelines — all offline over a seeded temp store."""
 
+import json
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -176,6 +177,13 @@ def test_research_events_endpoint(client):
 
 
 # --- /api/data-sources: only real parquets are offered (no silent path drift) ---
+
+def test_llm_config_exposes_routes_without_credentials():
+    body = TestClient(app).get("/api/llm-config").json()
+    assert set(body) == {"backend", "policy", "batch_size", "fidelity_mode",
+                         "survivor_audit", "routes"}
+    assert "key" not in json.dumps(body).lower()
+
 
 def test_data_sources_lists_only_present_parquets():
     r = TestClient(app).get("/api/data-sources")

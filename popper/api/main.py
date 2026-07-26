@@ -79,6 +79,28 @@ def get_stats() -> dict:
     return get_memory().stats()
 
 
+@app.get("/api/llm-config")
+def llm_config() -> dict:
+    """Public routing shape only; credentials are never returned."""
+    routes = {}
+    if settings.llm_backend in {"subscriptions", "hybrid"}:
+        routes = {
+            "hypothesis": settings.llm_hypothesis_route,
+            "wildcard": settings.llm_wildcard_route,
+            "synthesis": settings.llm_synthesis_route,
+            "synthesis_strong": settings.llm_synthesis_strong_route,
+            "audit": settings.llm_audit_route,
+        }
+    return {
+        "backend": settings.llm_backend,
+        "policy": settings.llm_route_policy,
+        "batch_size": settings.llm_batch_size,
+        "fidelity_mode": settings.llm_fidelity_mode,
+        "survivor_audit": settings.llm_survivor_audit,
+        "routes": routes,
+    }
+
+
 @app.get("/api/feature-gaps")
 def list_feature_gaps(status: str | None = None, limit: int = 20) -> dict:
     return {"feature_gaps": get_memory().list_feature_gaps(status=status, limit=limit)}
@@ -100,6 +122,10 @@ def run_research_once(req: ResearchRunRequest) -> dict:
         "failures": s.failures,
         "survivors": s.survivors,
         "categories": s.category_report(),
+        "llm_usage": s.llm_usage,
+        "provider_paused": s.provider_paused,
+        "retry_after": s.retry_after,
+        "stopped_reason": s.stopped_reason,
     }
 
 

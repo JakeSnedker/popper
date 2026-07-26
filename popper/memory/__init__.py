@@ -5,8 +5,8 @@ Set POPPER_STORE=supabase (+ creds) to use the production Postgres store.
 """
 
 from popper.config import settings
-from popper.memory.base import AlphaMemory, embed_text
-from popper.memory.embed import LocalEmbedder, get_embedder
+from popper.memory.base import AlphaMemory, EmbeddingSpaceMismatch, embed_text
+from popper.memory.embed import LocalEmbedder, LocalSemanticEmbedder, get_embedder
 from popper.memory.map import categorize, complete_scorecard
 from popper.memory.sqlite_repo import SqliteMemory
 
@@ -29,5 +29,6 @@ def get_memory() -> AlphaMemory:
 
 __all__ = [
     "AlphaMemory", "SqliteMemory", "get_memory",
-    "get_embedder", "LocalEmbedder", "embed_text", "categorize", "complete_scorecard",
+    "get_embedder", "LocalEmbedder", "LocalSemanticEmbedder",
+    "EmbeddingSpaceMismatch", "embed_text", "categorize", "complete_scorecard",
 ]

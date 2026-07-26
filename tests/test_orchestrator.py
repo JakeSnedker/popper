@@ -13,6 +13,7 @@ from test_falsify import END, START, _bars, _cfg, _run_fn_over
 
 import numpy as np
 
+from popper.agents.llm import LLMProviderError
 from popper.memory import LocalEmbedder
 from popper.memory.sqlite_repo import SqliteMemory
 from popper.orchestrator import run_research
@@ -42,9 +43,7 @@ class FailingHypothesisLLM(ScriptedLLM):
 
 
 class FailingSynthesisLLM(ScriptedLLM):
-    """Hypothesis call succeeds; synthesis call raises — simulates a rate limit
-    (429) landing MID-pipeline, after a claim was generated but before any
-    artifact could be evaluated/persisted."""
+    """Hypothesis succeeds but every synthesis content attempt fails."""
 
     def __init__(self):
         super().__init__([], [])
@@ -53,7 +52,36 @@ class FailingSynthesisLLM(ScriptedLLM):
         self.models.append(model)
         if "FALSIFIABLE" in system:  # hypothesis agent — return a valid claim
             return _hyp("momentum persists on US30", "flow", ["ema_10"])
-        raise RuntimeError("provider rate limited (429)")  # synthesis agent
+        raise RuntimeError("synthesis process returned no usable content")
+
+
+class BatchedLLM:
+    def __init__(self):
+        self.hypothesis_calls = 0
+        self.synthesis_calls = 0
+
+    def complete(self, system, prompt, model, max_tokens=1024):
+        if "FALSIFIABLE" in system:
+            self.hypothesis_calls += 1
+            return json.dumps([
+                {"claim": f"distinct mean reversion mechanism {i}", "mechanism": f"flow {i}",
+                 "required_features": ["atr_14"], "expected_regime": "unknown"}
+                for i in range(3)
+            ])
+        self.synthesis_calls += 1
+        return _DEAD
+
+
+class RateLimitedLLM:
+    def __init__(self):
+        self.calls = 0
+
+    def complete(self, system, prompt, model, max_tokens=1024):
+        self.calls += 1
+        raise LLMProviderError(
+            "subscription quota reached", provider="claude_cli", retryable=True,
+            rate_limited=True, retry_after=900,
+        )
 
 
 def _hyp(claim, mech, feats):
@@ -168,3 +196,29 @@ def test_llm_failure_persists_no_strategy():
         assert s.failures, "the infra failure must be recorded as a run failure"
         counts = mem.stats()["counts"]
         assert counts["hypotheses"] == 0 and counts["verdicts"] == 0, (type(llm).__name__, counts)
+
+
+def test_hypothesis_batch_is_consumed_across_candidate_iterations():
+    llm = BatchedLLM()
+    summary = run_research(
+        mem=_mem(), llm=llm, run_fn=_run_fn_over(_bars_uptrend()),
+        period=(START, END), cfg=_cfg(), iterations=3,
+        budget={"explore": 1.0, "wildcard": 0.0, "exploit": 0.0},
+    )
+    assert summary.proposed == 3
+    assert llm.hypothesis_calls == 1
+    assert llm.synthesis_calls == 3
+
+
+def test_provider_failure_pauses_run_without_repair_hammering():
+    memory = _mem()
+    llm = RateLimitedLLM()
+    summary = run_research(
+        mem=memory, llm=llm, run_fn=_run_fn_over(_bars_uptrend()),
+        period=(START, END), cfg=_cfg(), iterations=8,
+    )
+    assert summary.provider_paused is True
+    assert summary.retry_after == 900
+    assert summary.skipped == 0
+    assert llm.calls == 1
+    assert memory.stats()["counts"]["hypotheses"] == 0

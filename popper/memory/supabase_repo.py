@@ -91,16 +91,29 @@ class SupabaseMemory(AlphaMemory):
         self.client.table("hypotheses").update(
             {"behaviour_signature": signature}).eq("id", hypothesis_id).execute()
 
+    def set_embedding(self, hypothesis_id: str, embedding: list[float], tags: dict) -> None:
+        self.client.table("hypotheses").update(
+            {"embedding": embedding, "tags": tags}).eq("id", hypothesis_id).execute()
+
     def get_hypothesis(self, hypothesis_id: str) -> Hypothesis | None:
         res = self.client.table("hypotheses").select("*").eq("id", hypothesis_id).execute()
         return Hypothesis(**res.data[0]) if res.data else None
 
     def list_hypotheses(self, status: HypothesisStatus | None = None) -> list[Hypothesis]:
-        q = self.client.table("hypotheses").select("*")
-        if status is not None:
-            q = q.eq("status", status.value)
-        res = q.order("created_at", desc=True).execute()
-        return [Hypothesis(**r) for r in res.data]
+        # Explicit pagination: PostgREST commonly caps one response at 1000 rows,
+        # while novelty must see the complete map to prevent re-exploration.
+        rows, start, page = [], 0, 1000
+        while True:
+            q = self.client.table("hypotheses").select("*")
+            if status is not None:
+                q = q.eq("status", status.value)
+            batch = (q.order("created_at", desc=True)
+                     .range(start, start + page - 1).execute().data)
+            rows.extend(batch)
+            if len(batch) < page:
+                break
+            start += page
+        return [Hypothesis(**r) for r in rows]
 
     def record(self, hypothesis_id: str) -> dict:
         h = self.get_hypothesis(hypothesis_id)
@@ -174,15 +187,20 @@ class SupabaseMemory(AlphaMemory):
         return q.order("updated_at", desc=True).limit(limit).execute().data
 
     def validated_equity_curves(self) -> list[list[float]]:
-        res = (
-            self.client.table("experiments").select("equity_curve, specs!inner(hypothesis_id, "
-            "hypotheses!inner(status))").execute()
-        )
-        out = []
-        for r in res.data:
-            status = r.get("specs", {}).get("hypotheses", {}).get("status")
-            if status in ("survived", "promoted") and r.get("equity_curve"):
-                out.append(r["equity_curve"])
+        out, start, page = [], 0, 1000
+        while True:
+            batch = (
+                self.client.table("experiments").select(
+                    "equity_curve, specs!inner(hypothesis_id, hypotheses!inner(status))"
+                ).range(start, start + page - 1).execute().data
+            )
+            for row in batch:
+                status = row.get("specs", {}).get("hypotheses", {}).get("status")
+                if status in ("survived", "promoted") and row.get("equity_curve"):
+                    out.append(row["equity_curve"])
+            if len(batch) < page:
+                break
+            start += page
         return out
 
     # novelty / is_stale inherited from AlphaMemory (embedding-distance, spec/04)

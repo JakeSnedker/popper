@@ -100,6 +100,15 @@ export function ResearchControls({ onRunComplete }: { onRunComplete?: (runId: st
             <span>workers {result.worker_runs}</span>
             <span>skipped {result.skipped}</span>
           </div>
+          <div className="mt-2 text-[11px] text-slate-500 font-mono">
+            LLM {result.llm_usage.calls} calls · {result.llm_usage.input_tokens.toLocaleString()} in /{" "}
+            {result.llm_usage.output_tokens.toLocaleString()} out · {result.llm_usage.failovers} failovers
+          </div>
+          {result.provider_paused && (
+            <p className="mt-2 text-[11px] text-amber-300">
+              Provider circuit paused · retry in {result.retry_after}s
+            </p>
+          )}
           {result.failures.length > 0 && (
             <p className="mt-2 text-[11px] text-amber-300 line-clamp-3">
               Non-fatal: {result.failures[0]}

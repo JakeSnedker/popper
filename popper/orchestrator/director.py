@@ -17,11 +17,14 @@ Substrate: plain asyncio + the artifact contracts — no framework (spec DECISIO
 
 import asyncio
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
-from popper.agents import propose, screen, synthesize, view
+from popper.agents import audit_fidelity, propose_batch, screen, synthesize, view
+from popper.agents.llm import LLMProviderError
 from popper.artifacts import StrategySpec
+from popper.config import settings
 from popper.dsl import DSLValidationError
 from popper.experiments.runner import bars_for_spec, run
 from popper.feature_gaps import record_feature_gaps
@@ -75,6 +78,10 @@ class RunSummary:
     survivors: list = field(default_factory=list)       # explore summary dicts
     categories: dict = field(default_factory=dict)      # etype -> {kills, survivors, dead}
     budget_spent: dict = field(default_factory=dict)    # engine -> iterations
+    llm_usage: dict = field(default_factory=dict)
+    provider_paused: bool = False
+    retry_after: int = 0
+    stopped_reason: str = ""
 
     def category_report(self) -> dict:
         return {et: {"survivors": len(c["survivors"]), "kills": c["kills"], "dead": c["dead"]}
@@ -103,6 +110,14 @@ def _event(mem, run_id: str, iteration: int, engine: str, role: str, stage: str,
         print(f"[warn] research-event log dropped ({type(e).__name__}: {e})", flush=True)
 
 
+def _llm_mark(llm) -> int:
+    return llm.mark() if hasattr(llm, "mark") else 0
+
+
+def _llm_trace(llm, mark: int) -> list[dict]:
+    return llm.records_since(mark) if hasattr(llm, "records_since") else []
+
+
 def _pick(budget: dict, spent: dict) -> str:
     """Largest-deficit allocation — honors the split deterministically.
     ponytail: a counter, not a scheduler; swap for a bandit if the dial goes adaptive."""
@@ -111,50 +126,77 @@ def _pick(budget: dict, spent: dict) -> str:
 
 
 def _explore(mem, llm, run_fn, period, cfg, wildcard: bool,
-             run_id: str = "", iteration: int = 0, engine: str = "explore") -> dict:
-    """One explore/wildcard candidate through the blind pipeline. Returns a result
-    dict; on gatekeeper reject or synthesis failure, {'ok': False}."""
+             run_id: str = "", iteration: int = 0, engine: str = "explore",
+             hypothesis=None, batch_size: int = 1) -> dict:
+    """One candidate through the blind pipeline; surplus batch items are queued."""
+    pending = []
+    mark = _llm_mark(llm)
     try:
-        _event(mem, run_id, iteration, engine, "hypothesis", "propose", "running",
-               "asking the hypothesis agent for a new claim")
-        h = propose(view("hypothesis", mem), llm, wildcard=wildcard)
+        if hypothesis is None:
+            _event(mem, run_id, iteration, engine, "hypothesis", "propose", "running",
+                   f"asking for a batch of {batch_size} blind claims")
+            generated = propose_batch(
+                view("hypothesis", mem), llm, count=batch_size, wildcard=wildcard,
+            )
+            hypothesis, pending = generated[0], generated[1:]
         _event(mem, run_id, iteration, engine, "hypothesis", "propose", "ok",
-               h.claim, payload={"required_features": h.required_features, "wildcard": wildcard})
+               hypothesis.claim,
+               payload={"required_features": hypothesis.required_features,
+                        "wildcard": wildcard, "batch_surplus": len(pending),
+                        "llm_calls": _llm_trace(llm, mark)})
+    except LLMProviderError as e:
+        reason = f"hypothesis provider unavailable: {e}"
+        _event(mem, run_id, iteration, engine, "hypothesis", "propose", "provider_error",
+               reason, payload={"llm_calls": _llm_trace(llm, mark)})
+        raise
     except Exception as e:
         reason = f"hypothesis failed: {type(e).__name__}: {e}"
-        _event(mem, run_id, iteration, engine, "hypothesis", "propose", "error", reason)
-        return {"ok": False, "reason": reason}
+        _event(mem, run_id, iteration, engine, "hypothesis", "propose", "error", reason,
+               payload={"llm_calls": _llm_trace(llm, mark)})
+        return {"ok": False, "reason": reason, "pending": pending}
 
-    gate = screen(h, view("gatekeeper", mem))          # blind: novelty + category
-    gate_payload = {"novelty": gate["novelty"], "category": gate["category"]}
+    gate = screen(hypothesis, view("gatekeeper", mem))
+    hypothesis = gate["hypothesis"]  # reuse its one embedding through evaluate/store
+    gate_payload = {"novelty": gate["novelty"], "nearest_id": gate["nearest_id"],
+                    "category": gate["category"]}
     if not gate["accepted"]:
         _event(mem, run_id, iteration, engine, "gatekeeper", "screen", "rejected",
                gate["reason"], payload=gate_payload)
-        return {"ok": False, "reason": gate["reason"]}
+        return {"ok": False, "reason": gate["reason"], "pending": pending}
     _event(mem, run_id, iteration, engine, "gatekeeper", "screen", "ok",
            "hypothesis accepted as novel", payload=gate_payload)
 
+    mark = _llm_mark(llm)
     try:
         _event(mem, run_id, iteration, engine, "synthesis", "compile", "running",
-               "translating hypothesis into Strategy DSL")
-        spec = synthesize(h, llm, enforce_local_context=(run_fn is run))  # blind: hypothesis + DSL only
+               "translating hypothesis into faithful Strategy DSL")
+        spec = synthesize(
+            hypothesis, llm, enforce_local_context=(run_fn is run),
+        )
         _event(mem, run_id, iteration, engine, "synthesis", "compile", "ok",
-               f"compiled DSL spec {spec.name}", payload={"features": spec.alpha.features})
+               f"compiled DSL spec {spec.name}",
+               payload={"features": spec.alpha.features, "llm_calls": _llm_trace(llm, mark)})
+    except LLMProviderError as e:
+        reason = f"synthesis provider unavailable: {e}"
+        _event(mem, run_id, iteration, engine, "synthesis", "compile", "provider_error",
+               reason, payload={"llm_calls": _llm_trace(llm, mark)})
+        raise
     except Exception as e:
         if isinstance(e, DSLValidationError):
-            record_feature_gaps(mem, e, source="synthesis", hypothesis=h)
+            record_feature_gaps(mem, e, source="synthesis", hypothesis=hypothesis)
         reason = f"synthesis failed: {type(e).__name__}: {e}"
-        _event(mem, run_id, iteration, engine, "synthesis", "compile", "error", reason)
-        return {"ok": False, "reason": reason}
+        _event(mem, run_id, iteration, engine, "synthesis", "compile", "error", reason,
+               payload={"llm_calls": _llm_trace(llm, mark)})
+        return {"ok": False, "reason": reason, "pending": pending}
 
     try:
         _event(mem, run_id, iteration, engine, "gauntlet", "evaluate", "running",
                "running backtest and falsification gauntlet")
-        summary = evaluate(h, spec, mem=mem, period=period, cfg=cfg, run_fn=run_fn)
+        summary = evaluate(hypothesis, spec, mem=mem, period=period, cfg=cfg, run_fn=run_fn)
     except Exception as e:
         reason = f"evaluation failed: {type(e).__name__}: {e}"
         _event(mem, run_id, iteration, engine, "gauntlet", "evaluate", "error", reason)
-        return {"ok": False, "reason": reason}
+        return {"ok": False, "reason": reason, "pending": pending}
     stored = _stored_spec(mem, summary["hypothesis_id"])
     _event(mem, run_id, iteration, engine, "gauntlet", "evaluate", summary["verdict"],
            f"verdict {summary['verdict'].upper()}: {', '.join(summary['reasons']) or 'passed gates'}",
@@ -165,8 +207,27 @@ def _explore(mem, llm, run_fn, period, cfg, wildcard: bool,
                "scorecard_id": summary["scorecard_id"],
                "verdict_id": summary["verdict_id"],
            }, payload={"stats": summary["stats"]})
+
+    if (summary["verdict"] in SURVIVE and settings.llm_survivor_audit
+            and hasattr(llm, "supports_role") and llm.supports_role("audit")):
+        mark = _llm_mark(llm)
+        try:
+            summary["semantic_audit"] = audit_fidelity(hypothesis, stored, llm)
+            status = "ok" if summary["semantic_audit"]["faithful"] else "warning"
+            _event(mem, run_id, iteration, engine, "audit", "semantic_fidelity", status,
+                   summary["semantic_audit"]["reason"],
+                   artifact_ids={"hypothesis_id": summary["hypothesis_id"],
+                                 "spec_id": summary["spec_id"]},
+                   payload={"audit": summary["semantic_audit"],
+                            "llm_calls": _llm_trace(llm, mark)})
+        except Exception as e:  # audit is advisory; statistics remain authoritative
+            summary["semantic_audit"] = {"faithful": None, "reason": str(e)[:1000]}
+            _event(mem, run_id, iteration, engine, "audit", "semantic_fidelity", "unavailable",
+                   str(e), payload={"llm_calls": _llm_trace(llm, mark)})
+
     return {"ok": True, "verdict": summary["verdict"],
-            "category": gate["category"]["edge_type"], "summary": summary, "spec": stored}
+            "category": gate["category"]["edge_type"], "summary": summary,
+            "spec": stored, "pending": pending}
 
 
 def _worker_refine(mem, spec: StrategySpec, run_fn, period, cfg,
@@ -207,6 +268,8 @@ def _stored_spec(mem, hypothesis_id: str) -> StrategySpec:
 
 async def _run(mem, llm, run_fn, period, cfg, iterations, budget, run_id: str) -> RunSummary:
     s = RunSummary(iterations=iterations, run_id=run_id, budget_spent={k: 0 for k in budget})
+    pending = {"explore": deque(), "wildcard": deque()}
+    run_llm_mark = _llm_mark(llm)
     _event(mem, run_id, 0, "director", "director", "run", "running",
            f"starting research run with {iterations} iterations", payload={"budget": budget})
 
@@ -246,12 +309,29 @@ async def _run(mem, llm, run_fn, period, cfg, iterations, budget, run_id: str) -
                         s.categories[et].setdefault("survivors", []).append(variant)
             continue
 
-        # explore, wildcard, or exploit with nothing live yet -> generate a candidate
+        # Explore, wildcard, or exploit with nothing live yet. A creative call
+        # fills a small queue; each queued idea still gates/evaluates independently.
+        queue_name = "wildcard" if engine == "wildcard" else "explore"
+        queued = pending[queue_name].popleft() if pending[queue_name] else None
         try:
-            res = await asyncio.to_thread(_explore, mem, llm, run_fn, period, cfg,
-                                          engine == "wildcard", run_id, i, engine)
+            res = await asyncio.to_thread(
+                _explore, mem, llm, run_fn, period, cfg,
+                engine == "wildcard", run_id, i, engine, queued,
+                settings.llm_batch_size if queued is None else 1,
+            )
+        except LLMProviderError as e:
+            s.provider_paused = True
+            s.retry_after = e.retry_after or settings.llm_provider_backoff_seconds
+            s.stopped_reason = str(e)
+            s.failures.append(s.stopped_reason)
+            _event(mem, run_id, i, engine, "director", "provider_circuit", "paused",
+                   s.stopped_reason, payload={"retry_after": s.retry_after})
+            break
         except Exception as e:
-            res = {"ok": False, "reason": f"candidate crashed boundary: {type(e).__name__}: {e}"}
+            res = {"ok": False,
+                   "reason": f"candidate crashed boundary: {type(e).__name__}: {e}",
+                   "pending": []}
+        pending[queue_name].extend(res.get("pending", []))
         if not res["ok"]:
             s.skipped += 1
             reason = res.get("reason", "unknown candidate failure")
@@ -285,10 +365,15 @@ async def _run(mem, llm, run_fn, period, cfg, iterations, budget, run_id: str) -
                 _event(mem, run_id, i, engine, "director", "prune", "ok",  # exploit may still rescue a near-miss
                        f"pruned dead category {res['category']}", payload={"category": res["category"]})
 
-    _event(mem, run_id, iterations, "director", "director", "run", "done",
-           "research run complete", payload={"proposed": s.proposed, "killed": s.killed,
-                                             "survived": s.survived, "worker_runs": s.worker_runs,
-                                             "skipped": s.skipped})
+    if hasattr(llm, "stats"):
+        s.llm_usage = llm.stats(run_llm_mark)
+    final_status = "paused" if s.provider_paused else "done"
+    final_message = s.stopped_reason or "research run complete"
+    _event(mem, run_id, iterations, "director", "director", "run", final_status,
+           final_message, payload={"proposed": s.proposed, "killed": s.killed,
+                                   "survived": s.survived, "worker_runs": s.worker_runs,
+                                   "skipped": s.skipped, "llm_usage": s.llm_usage,
+                                   "retry_after": s.retry_after})
     return s
 
 

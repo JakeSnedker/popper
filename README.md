@@ -17,9 +17,10 @@ to disprove it, not merely show a pretty backtest. This is Popperian science app
 
 ## Current target
 - **Data/execution:** MetaTrader 5 — US30, NAS100 (indices). Portable to Futures (NinjaTrader) later.
-- **Agents:** Anthropic Claude.
-- **Store:** Supabase (alpha memory).
-- **Status:** Planning. See `docs/ROADMAP.md` and `docs/ARCHITECTURE.md`.
+- **Agents:** role-routed official Claude.ai and ChatGPT/Codex subscriptions.
+- **Store:** SQLite locally or shared Supabase alpha memory.
+- **Status:** working autonomous research system. See `docs/NORTH_STAR.md`,
+  `docs/LLM_ROUTING.md`, and `docs/SELF_LEARNING_ROADMAP.md`.
 
 ## The loop, in one breath
 Propose a falsifiable hypothesis → express it in the Strategy DSL → backtest → run the falsification

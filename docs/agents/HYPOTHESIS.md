@@ -9,8 +9,9 @@ The hypothesis must name a market mechanism, not just a chart pattern. Good hypo
 ## Current Implementation
 
 - Code: `popper/agents/hypothesis.py`
-- Function: `propose(view, llm, model, wildcard=False)`
-- Default model route: `MODELS["hypothesis"]`
+- Functions: `propose(...)` and batched `propose_batch(...)`
+- Default route: logical `hypothesis`; provider/model resolved by `LLMRouter`
+- Runtime batch: up to `POPPER_LLM_BATCH_SIZE` claims per creative call
 - Memory view: `BlindView`
 
 ## Inputs

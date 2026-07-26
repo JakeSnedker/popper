@@ -1,38 +1,47 @@
-"""Synthesis agent (spec/02): express a Hypothesis as a VALID DSL StrategySpec,
-with a compiler-feedback REPAIR loop — generate -> validate_spec -> on error,
-feed the error text back and retry (capped). Returns a spec that passes, or
-raises after the cap. This is Phase 6's done-when: valid specs, unaided.
-"""
+"""Compile a hypothesis into valid, faithful Popper Strategy DSL."""
 
 import yaml
 
-from popper.agents.llm import MODELS, strip_fence
+from popper.agents.fidelity import hypothesis_feature_errors, validate_fidelity
+from popper.agents.llm import LLMProviderError, MODELS, strip_fence
 from popper.artifacts import StrategySpec
+from popper.config import settings
 from popper.dsl import DSLValidationError, validate_spec
-from popper.dsl.validator import validate_local_data_context
 from popper.dsl.features import FEATURES
+from popper.dsl.validator import validate_local_data_context
 
 SYSTEM = (
-    "You translate a trading hypothesis into a Popper Strategy DSL spec in YAML. "
-    "Schema: name; alpha{features:[...], signal:'<bool expr>', signal_short?}; "
-    "wrapper{stop{type:atr,mult}, target{type:rr,ratio}, sizing{risk_pct}, ...}; "
-    "context{universe:[US30], timeframe:5m}; param_space{name:[values]}. "
-    "Use ONLY US30 and timeframe 5m; local research data does not support 15m/H1/NAS100 yet. "
-    "Signals use ONLY declared features with AND/OR/comparisons. Numeric wrapper "
-    "fields may be a literal number or a p[name] reference; every p[name] MUST "
-    "appear in param_space and every param_space key MUST be referenced. "
-    "Respond with ONLY the YAML."
+    "Translate one trading hypothesis into Popper Strategy DSL YAML. Schema: name; "
+    "alpha{features,signal,signal_short?}; wrapper{stop,target,trail,break_even,sizing}; "
+    "context{universe:[US30],timeframe:5m}; param_space. Use only the supplied feature "
+    "library and bounded AND/OR/NOT arithmetic/comparison expressions. Every hypothesis "
+    "required_feature must be declared and used by signal or signal_short. Every p[name] "
+    "must have a non-empty param_space grid and every grid must be referenced. Grid keys "
+    "are bare names, NEVER p[name]. Example: signal: 'atr_14 > p[atr_min]' with "
+    "param_space: {atr_min: [5, 10, 15]}. Wrapper enums are stop atr|level, target "
+    "ratio|level, trail none|atr, break_even none|after_r. Never invent other types. "
+    "Use US30 5m only. Return YAML only."
 )
 
 
-def _prompt(h) -> str:
+def _prompt(hypothesis) -> str:
     return "\n".join([
-        f"Hypothesis: {h.claim}",
-        f"Mechanism: {h.mechanism}",
-        f"Suggested features: {', '.join(h.required_features) or 'choose from the library'}",
-        f"Feature library: {', '.join(FEATURES)} (plus ema_<n>).",
-        "Available context: universe [US30], timeframe 5m only.",
-        "Write the StrategySpec YAML.",
+        f"Hypothesis: {hypothesis.claim}",
+        f"Mechanism: {hypothesis.mechanism}",
+        f"Mandatory signal features: {', '.join(hypothesis.required_features) or 'choose minimally'}",
+        f"Feature library: {', '.join(FEATURES)}; ema_<n> is allowed.",
+        "Valid shape example:",
+        "name: probe",
+        "alpha: {features: [atr_14], signal: 'atr_14 > p[atr_min]'}",
+        "wrapper:",
+        "  stop: {type: atr, mult: 'p[sl_atr]'}",
+        "  target: {type: ratio, ratio: 'p[rr]'}",
+        "  trail: {type: none}",
+        "  break_even: {type: none}",
+        "  sizing: {risk_pct: 0.5}",
+        "context: {universe: [US30], timeframe: 5m}",
+        "param_space: {atr_min: [5, 10, 15], sl_atr: [1.0, 1.5, 2.0], rr: [1.0, 1.5, 2.0]}",
+        "Keep the signal minimal and directly falsifiable. Write the complete StrategySpec YAML.",
     ])
 
 
@@ -40,29 +49,44 @@ def synthesize(
     hypothesis,
     llm,
     model: str = MODELS["synthesis"],
-    max_repairs: int = 3,
+    max_repairs: int = 1,
     enforce_local_context: bool = True,
+    fidelity_mode: str | None = None,
 ) -> StrategySpec:
-    """Hypothesis -> validated StrategySpec, repairing against validator feedback."""
+    """Cheap first pass, then one stronger-model repair against exact errors."""
+    unsupported = hypothesis_feature_errors(hypothesis)
+    if unsupported:
+        raise DSLValidationError(unsupported)
     prompt = _prompt(hypothesis)
     last_err = "none"
+    mode = fidelity_mode or settings.llm_fidelity_mode
     for attempt in range(max_repairs + 1):
-        p = prompt if attempt == 0 else (
-            f"{prompt}\n\nYour previous spec was INVALID:\n{last_err}\n"
-            "Fix every listed problem and return corrected YAML only."
+        role = model if attempt == 0 else MODELS["synthesis_strong"]
+        request = prompt if attempt == 0 else (
+            f"{prompt}\n\nThe prior spec was INVALID:\n{last_err}\n"
+            "Fix every listed issue and return one complete corrected YAML document."
         )
         raw = ""
         try:
-            raw = llm.complete(SYSTEM, p, model)
+            raw = llm.complete(SYSTEM, request, role, max_tokens=1400)
             data = yaml.safe_load(strip_fence(raw)) or {}
+            # Subscription CLIs use a structured {yaml: "..."} envelope.
+            if isinstance(data, dict) and set(data) == {"yaml"} and isinstance(data["yaml"], str):
+                data = yaml.safe_load(data["yaml"]) or {}
             if not isinstance(data, dict):
                 raise ValueError("spec must be a YAML mapping")
             data["hypothesis_id"] = hypothesis.id or ""
             data.setdefault("name", f"synth_{hypothesis.id or 'spec'}")
-            spec = validate_spec(data)  # dict -> validated StrategySpec (raises DSLValidationError)
-            return validate_local_data_context(spec) if enforce_local_context else spec
+            spec = validate_spec(data)
+            if enforce_local_context:
+                spec = validate_local_data_context(spec)
+            return validate_fidelity(hypothesis, spec, mode=mode)
+        except LLMProviderError:
+            raise
         except DSLValidationError as e:
             last_err = "\n".join(e.errors)
-        except Exception as e:  # malformed YAML / bad shape -> feed back too
-            last_err = str(e)
-    raise DSLValidationError([f"synthesis failed after {max_repairs} repairs; last error:\n{last_err}"])
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}; raw={raw[:500]}"
+    raise DSLValidationError([
+        f"synthesis failed after {max_repairs + 1} content attempts; last error:\n{last_err}"
+    ])

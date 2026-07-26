@@ -1,11 +1,18 @@
 # Registers the Popper holiday runner as a Windows Scheduled Task.
-# $0 Claude Code subscription runner (holiday_worker.sh, POPPER_LLM_BACKEND=cli).
+# Subscription router: official Claude.ai + ChatGPT/Codex logins.
 # Self-heals: starts at logon + every 5h, but won't double-start (IgnoreNew).
 # Run once:  powershell -ExecutionPolicy Bypass -File scripts\register_holiday_task.ps1
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 $bash = "C:\Program Files\Git\bin\bash.exe"
 $repoFwd = $repo -replace '\\','/'   # git bash accepts C:/Users/... directly
+$python = Join-Path $repo ".venv\Scripts\python.exe"
+$authCheck = Join-Path $repo "scripts\check_subscription_auth.py"
+
+& $python $authCheck
+if ($LASTEXITCODE -ne 0) {
+    throw "Both subscription CLIs must be authenticated before registering the worker."
+}
 
 $action = New-ScheduledTaskAction -Execute $bash `
     -Argument "-lc `"cd '$repoFwd' && exec bash scripts/holiday_worker.sh`""
@@ -23,7 +30,7 @@ $settings = New-ScheduledTaskSettingsSet `
 
 Register-ScheduledTask -TaskName "PopperHolidayRunner" `
     -Action $action -Trigger $t1,$t2 -Settings $settings `
-    -Description "Popper \$0 subscription alpha-generation runner (self-healing). Logs to holiday.log." `
+    -Description "Popper Claude/OpenAI subscription alpha-generation runner. Logs to holiday.log." `
     -Force | Out-Null
 
 Write-Host "Registered PopperHolidayRunner. Starting it now..."

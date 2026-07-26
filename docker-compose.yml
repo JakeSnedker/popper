@@ -16,10 +16,10 @@ services:
       # Defaults if omitted from .env. Instrument selection is NOT here — it lives in
       # the strategy specs (universe:[US30]); a operator "does DAX" by dropping DAX
       # parquet into data/dax/ and pointing the store at the shared map.
-      RUN_MODE: "${RUN_MODE:-llm}"
-      RUN_MINUTES: "${RUN_MINUTES:-60}"
-      RUN_ITERATIONS: "${RUN_ITERATIONS:-12}"
-      RUN_SLEEP: "${RUN_SLEEP:-30}"
+      # Subscription LLM runs are host-side so each operator uses their own
+      # official Claude/Codex login. The container is a deterministic smoke.
+      RUN_MODE: "${RUN_MODE:-seeded}"
+      RUN_SLEEP: "${RUN_SLEEP:-3600}"
     volumes:
       - ./data:/app/data:ro        # market parquet — read-only, never baked into image
     restart: unless-stopped        # this + the entrypoint loop = the "cron"

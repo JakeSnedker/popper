@@ -213,6 +213,17 @@ export interface ResearchRunRequest {
   exit_menu: boolean;
 }
 
+export interface LlmUsage {
+  calls: number;
+  failed_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cost_usd: number;
+  failovers: number;
+  providers: Record<string, number>;
+}
+
 export interface ResearchRunSummary {
   run_id: string;
   iterations: number;
@@ -224,6 +235,10 @@ export interface ResearchRunSummary {
   skipped: number;
   failures: string[];
   categories: Record<string, { survivors: number; kills: number; dead: boolean }>;
+  llm_usage: LlmUsage;
+  provider_paused: boolean;
+  retry_after: number;
+  stopped_reason: string;
 }
 
 export interface ResearchEvent {

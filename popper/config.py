@@ -14,11 +14,24 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_key: str = ""
 
-    # agents (Phase 6)
-    anthropic_api_key: str = ""
-    # LLM backend: "api" (metered Anthropic API, low-latency) or "cli" ($0 via
-    # `claude -p` on the claude.ai subscription — for unattended/cron runs).
-    llm_backend: str = "api"
+    # Subscription-only runtime. Each operator authenticates the official
+    # Claude and Codex CLIs with their own Claude.ai / ChatGPT account.
+    llm_backend: str = "subscriptions"
+    llm_route_policy: str = "round_robin"  # priority | round_robin
+    llm_hypothesis_route: str = "claude_cli:sonnet,codex_cli:default"
+    llm_hypothesis_strong_route: str = "codex_cli:default,claude_cli:sonnet"
+    llm_wildcard_route: str = "codex_cli:default,claude_cli:opus"
+    llm_synthesis_route: str = "claude_cli:haiku,codex_cli:default"
+    llm_synthesis_strong_route: str = "codex_cli:default,claude_cli:sonnet"
+    llm_audit_route: str = "codex_cli:default,claude_cli:opus"
+    llm_batch_size: int = 5
+    llm_provider_backoff_seconds: int = 300
+    llm_rate_limit_backoff_seconds: int = 2700
+    llm_survivor_audit: bool = True
+    llm_fidelity_mode: str = "strict"  # strict | declared | off
+    # Safety: `codex login status` must report ChatGPT auth. An API-key Codex
+    # login is metered and is rejected unless this explicit opt-in is true.
+    llm_allow_metered_codex_cli: bool = False
 
     # default per-trade cost model — INFORMATIONAL, NON-GATING. The gauntlet
     # judges gross (frictionless) edge; these only feed the *_net raw_metrics

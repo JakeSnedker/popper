@@ -9,8 +9,9 @@ This agent is the bridge between natural-language research ideas and the control
 ## Current Implementation
 
 - Code: `popper/agents/synthesis.py`
-- Function: `synthesize(hypothesis, llm, model, max_repairs=3)`
-- Default model route: `MODELS["synthesis"]`
+- Function: `synthesize(hypothesis, llm, model, max_repairs=1)`
+- Default route: cheap logical `synthesis`, then `synthesis_strong` on deterministic failure
+- Fidelity gate: required features must be declared and used before evaluation
 - Memory view: no performance view; it sees one hypothesis plus DSL rules
 
 ## Inputs

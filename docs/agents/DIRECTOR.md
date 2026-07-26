@@ -64,7 +64,7 @@ This is acceptable because the Director does not generate blind hypotheses direc
 ## Upgrade Path
 
 - Replace fixed budget with adaptive bandit allocation.
-- Add cost accounting per agent and per candidate.
+- Cost/token/latency accounting is implemented per provider call and run; add long-term dashboard aggregation.
 - Add human approval gates before expensive runs.
 - Add cloud queue and resumable jobs.
 - Add production reports after each research cycle.

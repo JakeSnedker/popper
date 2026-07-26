@@ -1,125 +1,534 @@
-"""Injectable LLM client for the research agents (spec/02).
+"""Role-aware LLM routing for Popper's performance-blind research agents.
 
-Mirrors popper/memory/embed.py: the real client is plain urllib against the
-Anthropic Messages API — NO SDK dependency. Tests inject StubLLM (canned
-responses, no network, deterministic). Per-agent model strings live in MODELS
-(spec §12); each agent takes `model=` so they stay overridable.
-
-Fable 5 is BUILD-ONLY — these runtime models never include it.
+Provider transports are intentionally thin and stateless. The router owns
+subscription failover, circuit breaking, and usage telemetry; the agents own
+content repair. Provider failures must never be mistaken for malformed JSON/YAML.
 """
+
+from __future__ import annotations
 
 import json
 import os
 import re
 import subprocess
-import urllib.request
+import tempfile
+import time
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 
 from popper.config import settings
 
-# model split (spec §12). Overridable per agent call.
-# synthesis was opus — dropped to sonnet: it's the heaviest call and runs on EVERY
-# explore iteration, so opus dominated cost + subscription rate-limit burn. Sonnet
-# compiles the DSL fine (the synthesis repair loop catches the occasional miss) and
-# multiplies throughput-per-rate-window, which is what unattended bulk explore needs.
+# Logical roles, not provider model ids. LLMRouter resolves each role from config.
 MODELS = {
-    "hypothesis": "claude-sonnet-5",
-    "gatekeeper": "claude-haiku-4-5-20251001",
-    "synthesis": "claude-sonnet-5",
+    "hypothesis": "hypothesis",
+    "hypothesis_strong": "hypothesis_strong",
+    "wildcard": "wildcard",
+    "synthesis": "synthesis",
+    "synthesis_strong": "synthesis_strong",
+    "audit": "audit",
 }
 
 _FENCE = re.compile(r"```(?:json|yaml|yml)?\s*(.*?)```", re.DOTALL)
+_RATE_MARKERS = (
+    "rate limit", "rate_limit", "too many requests", "usage limit", "quota",
+    "capacity", "resets at", "you've hit your limit", "429",
+)
+_CODEX_EXECUTABLE = "codex.cmd" if os.name == "nt" else "codex"
+_KNOWN_PROVIDERS = {"claude_cli", "codex_cli"}
+_HYPOTHESIS_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "claim": {"type": "string"},
+        "mechanism": {"type": "string"},
+        "required_features": {"type": "array", "items": {"type": "string"}},
+        "expected_regime": {
+            "type": "string",
+            "enum": ["trending", "ranging", "high_vol", "low_vol", "unknown"],
+        },
+    },
+    "required": ["claim", "mechanism", "required_features", "expected_regime"],
+    "additionalProperties": False,
+}
+# Claude/Codex structured output requires an object root, so batches live under
+# one key rather than using a top-level array.
+_HYPOTHESIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "hypotheses": {"type": "array", "minItems": 1, "items": _HYPOTHESIS_ITEM_SCHEMA},
+    },
+    "required": ["hypotheses"],
+    "additionalProperties": False,
+}
+_SYNTHESIS_SCHEMA = {
+    "type": "object",
+    "properties": {"yaml": {"type": "string"}},
+    "required": ["yaml"],
+    "additionalProperties": False,
+}
+_AUDIT_SCHEMA = {
+    "type": "object",
+    "properties": {"faithful": {"type": "boolean"}, "reason": {"type": "string"}},
+    "required": ["faithful", "reason"],
+    "additionalProperties": False,
+}
+
+
+def _response_schema(role: str) -> dict | None:
+    if role.startswith("hypothesis") or role == "wildcard":
+        return _HYPOTHESIS_SCHEMA
+    if role.startswith("synthesis"):
+        return _SYNTHESIS_SCHEMA
+    if role == "audit":
+        return _AUDIT_SCHEMA
+    return None
 
 
 def strip_fence(text: str) -> str:
-    """Pull the body out of a ```json/```yaml fenced block if the model wrapped it."""
+    """Pull the body out of a fenced JSON/YAML response."""
     m = _FENCE.search(text)
     return (m.group(1) if m else text).strip()
 
 
-def _extract_text(payload: dict) -> str:
-    """Anthropic content can contain multiple block types; use every text block."""
-    blocks = payload.get("content", [])
-    text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict) and "text" in b).strip()
-    if text:
-        return text
-    raise RuntimeError(f"Anthropic response contained no text block: {json.dumps(payload)[:500]}")
+class LLMError(RuntimeError):
+    """Base class for errors at the model boundary."""
 
 
-class AnthropicClient:
-    """Anthropic Messages API via stdlib urllib. Key from settings or env."""
-
-    URL = "https://api.anthropic.com/v1/messages"
-
-    def __init__(self, api_key: str | None = None):
-        self.api_key = api_key or settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY", "")
-
-    def complete(self, system: str, prompt: str, model: str, max_tokens: int = 1024) -> str:
-        if not self.api_key:
-            raise RuntimeError("no Anthropic API key (settings.anthropic_api_key / ANTHROPIC_API_KEY)")
-        body = json.dumps({
-            "model": model, "max_tokens": max_tokens, "system": system,
-            "messages": [{"role": "user", "content": prompt}],
-        }).encode()
-        req = urllib.request.Request(self.URL, data=body, headers={
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        })
-        with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 (fixed host)
-            return _extract_text(json.load(resp))
+class LLMOutputError(LLMError):
+    """The provider answered, but did not return usable model content."""
 
 
-def _cli_model(model: str) -> str:
-    """Map an API model id to a `claude` CLI alias."""
+class LLMProviderError(LLMError):
+    """Transport, authentication, capacity, or quota failure."""
+
+    def __init__(self, message: str, *, provider: str, retryable: bool = False,
+                 rate_limited: bool = False, retry_after: int | None = None):
+        super().__init__(message)
+        self.provider = provider
+        self.retryable = retryable
+        self.rate_limited = rate_limited
+        self.retry_after = retry_after
+
+
+class LLMProvidersExhausted(LLMProviderError):
+    """Every configured provider for a role failed or has an open circuit."""
+
+    def __init__(self, role: str, errors: list[str], retry_after: int):
+        super().__init__(
+            f"all LLM providers unavailable for {role}: {'; '.join(errors)}",
+            provider="router", retryable=True,
+            rate_limited=any("rate" in e.lower() or "quota" in e.lower() for e in errors),
+            retry_after=retry_after,
+        )
+        self.role = role
+        self.errors = errors
+
+
+@dataclass(frozen=True)
+class RouteTarget:
+    provider: str
+    model: str
+
+
+def parse_route(value: str) -> list[RouteTarget]:
+    """Parse `provider:model,provider:model`; reject typos before they can bill."""
+    targets = []
+    for raw in value.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        if ":" not in raw:
+            raise ValueError(f"LLM route target must be provider:model, got {raw!r}")
+        provider, model = (part.strip() for part in raw.split(":", 1))
+        if provider not in _KNOWN_PROVIDERS:
+            raise ValueError(f"unknown LLM provider {provider!r}")
+        if not model:
+            raise ValueError(f"missing model in LLM route target {raw!r}")
+        targets.append(RouteTarget(provider, model))
+    if not targets:
+        raise ValueError("LLM route cannot be empty")
+    return targets
+
+
+def _retry_after(headers, default: int) -> int:
+    try:
+        return max(1, int(float(headers.get("Retry-After", default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _provider_error(provider: str, message: str, *, code: int | None = None,
+                    headers=None) -> LLMProviderError:
+    text = message.strip() or f"{provider} failed without an error message"
+    low = text.lower()
+    rate = code == 429 or any(marker in low for marker in _RATE_MARKERS)
+    retryable = rate or code in {408, 409, 425, 500, 502, 503, 504, 529}
+    default = (settings.llm_rate_limit_backoff_seconds if rate
+               else settings.llm_provider_backoff_seconds)
+    return LLMProviderError(
+        f"{provider} error{f' {code}' if code else ''}: {text[:500]}",
+        provider=provider, retryable=retryable, rate_limited=rate,
+        retry_after=_retry_after(headers or {}, default) if retryable else None,
+    )
+
+
+class _MeasuredClient:
+    provider = "unknown"
+
+    def __init__(self):
+        self.last_meta: dict = {}
+
+    def _meta(self, **values) -> None:
+        self.last_meta = values
+
+
+def _claude_model(model: str) -> str:
     m = model.lower()
     if "opus" in m:
         return "opus"
     if "haiku" in m:
         return "haiku"
-    return "sonnet"
+    if model == "default":
+        return "sonnet"
+    return model
 
 
-class ClaudeCliClient:
-    """$0 backend: shells to `claude -p` so discovery runs on the Claude.ai
-    subscription instead of the metered API. Same interface as AnthropicClient.
+class ClaudeCliClient(_MeasuredClient):
+    """Official Claude subscription CLI in stateless, no-tools print mode."""
 
-    The subprocess env has ANTHROPIC_API_KEY stripped ON PURPOSE — with the key
-    present the CLI bills the API and the whole point is lost; without it the CLI
-    falls back to the claude.ai OAuth login. Slower per call than the API (a CLI
-    spawn each time) and subject to subscription rate limits, so it's the
-    autopilot/cron backend, not the low-latency one.
-    ponytail: no retries/backoff here — the agents already have a self-repair
-    loop; add backoff only if rate-limit errors actually bite in practice."""
+    provider = "claude_cli"
 
     def __init__(self, timeout: int = 180):
+        super().__init__()
         self.timeout = timeout
 
-    def complete(self, system: str, prompt: str, model: str, max_tokens: int = 1024) -> str:
+    def complete(self, system: str, prompt: str, model: str, max_tokens: int = 1024,
+                 role: str = "") -> str:
         env = {k: v for k, v in os.environ.items()
                if k not in ("ANTHROPIC_API_KEY", "POPPER_ANTHROPIC_API_KEY")}
+        command = [
+            "claude", "-p", "--model", _claude_model(model),
+            "--system-prompt", system,
+            "--tools", "",
+            "--disable-slash-commands",
+            "--no-session-persistence",
+            "--safe-mode",
+            "--effort", "low",
+            "--output-format", "json",
+        ]
+        schema = _response_schema(role)
+        if schema:
+            command += ["--json-schema", json.dumps(schema, separators=(",", ":"))]
         try:
-            r = subprocess.run(
-                ["claude", "-p", "--model", _cli_model(model),
-                 "--append-system-prompt", system],
-                input=prompt, capture_output=True, text=True,
-                env=env, timeout=self.timeout,
+            result = subprocess.run(
+                command, input=prompt, capture_output=True, text=True, env=env,
+                timeout=self.timeout, cwd=tempfile.gettempdir(),
             )
         except FileNotFoundError as e:
-            raise RuntimeError("`claude` CLI not found (needed for POPPER_LLM_BACKEND=cli)") from e
-        if r.returncode != 0:
-            raise RuntimeError(f"claude -p failed ({r.returncode}): {r.stderr.strip()[:300]}")
-        out = r.stdout.strip()
-        if not out:
-            raise RuntimeError("claude -p returned empty output")
-        return out
+            raise _provider_error(self.provider, "`claude` CLI not found") from e
+        except subprocess.TimeoutExpired as e:
+            raise _provider_error(self.provider, f"timed out after {self.timeout}s", code=408) from e
+        combined = "\n".join(x for x in (result.stderr.strip(), result.stdout.strip()) if x)
+        if result.returncode != 0:
+            try:
+                failed = json.loads(result.stdout)
+                detail = (failed.get("result") or failed.get("error") or
+                          failed.get("errors") or combined)
+            except json.JSONDecodeError:
+                detail = combined
+            raise _provider_error(self.provider, str(detail))
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise LLMOutputError(f"Claude CLI returned invalid JSON envelope: {result.stdout[:500]}") from e
+        if payload.get("is_error"):
+            raise _provider_error(self.provider, str(payload.get("result") or payload))
+        usage = payload.get("usage") or {}
+        self._meta(
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+            cache_write_tokens=usage.get("cache_creation_input_tokens", 0),
+            cost_usd=float(payload.get("total_cost_usd") or 0.0),
+        )
+        structured = payload.get("structured_output")
+        if structured is not None:
+            return json.dumps(structured)
+        text = payload.get("result")
+        if not isinstance(text, str) or not text.strip():
+            raise LLMOutputError(f"Claude CLI returned no result: {json.dumps(payload)[:500]}")
+        return text.strip()
 
 
-def get_llm():
-    """Pick the LLM backend from settings: 'cli' = $0 subscription via `claude -p`,
-    anything else = the metered Anthropic API. Env: POPPER_LLM_BACKEND."""
-    if getattr(settings, "llm_backend", "api").lower() == "cli":
-        return ClaudeCliClient()
-    return AnthropicClient()
+def _find_codex_text(events: list[dict]) -> str:
+    for event in reversed(events):
+        item = event.get("item") if isinstance(event, dict) else None
+        if isinstance(item, dict) and item.get("type") in {"agent_message", "message"}:
+            text = item.get("text") or item.get("content")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+        for key in ("message", "output_text", "text", "result"):
+            text = event.get(key) if isinstance(event, dict) else None
+            if isinstance(text, str) and text.strip() and event.get("type") not in {"error"}:
+                return text.strip()
+    raise LLMOutputError("Codex CLI returned no final assistant message")
+
+
+class CodexCliClient(_MeasuredClient):
+    """Official OpenAI Codex CLI using the signed-in ChatGPT subscription."""
+
+    provider = "codex_cli"
+
+    def __init__(self, timeout: int = 240):
+        super().__init__()
+        self.timeout = timeout
+        self._auth_checked = False
+
+    def _check_subscription_auth(self) -> None:
+        if self._auth_checked:
+            return
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("OPENAI_API_KEY", "POPPER_OPENAI_API_KEY")}
+        try:
+            status = subprocess.run(
+                [_CODEX_EXECUTABLE, "login", "status"], capture_output=True, text=True,
+                timeout=30, cwd=tempfile.gettempdir(), env=env,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            raise _provider_error(self.provider, f"cannot inspect Codex auth: {e}") from e
+        detail = "\n".join(x for x in (status.stdout.strip(), status.stderr.strip()) if x)
+        if status.returncode != 0:
+            raise _provider_error(self.provider, detail or "Codex is not logged in")
+        if "api key" in detail.lower() and not settings.llm_allow_metered_codex_cli:
+            raise _provider_error(
+                self.provider,
+                "Codex CLI is authenticated with a metered API key; log in with ChatGPT "
+                "or explicitly set POPPER_LLM_ALLOW_METERED_CODEX_CLI=true",
+            )
+        if "chatgpt" not in detail.lower() and not settings.llm_allow_metered_codex_cli:
+            raise _provider_error(
+                self.provider, f"Codex subscription auth could not be verified: {detail[:200]}",
+            )
+        self._auth_checked = True
+
+    def complete(self, system: str, prompt: str, model: str, max_tokens: int = 1024,
+                 role: str = "") -> str:
+        self._check_subscription_auth()
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("OPENAI_API_KEY", "POPPER_OPENAI_API_KEY")}
+        command = [
+            _CODEX_EXECUTABLE, "exec", "-", "--sandbox", "read-only", "--ephemeral",
+            "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
+            "--color", "never", "--json", "-c", "approval_policy=\"never\"",
+        ]
+        if model != "default":
+            command += ["--model", model]
+        schema_path = None
+        schema = _response_schema(role)
+        if schema:
+            handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+            try:
+                json.dump(schema, handle)
+                schema_path = handle.name
+            finally:
+                handle.close()
+            command += ["--output-schema", schema_path]
+        full_prompt = (
+            "Follow these system instructions exactly. Do not use tools or inspect files.\n"
+            f"{system}\n\nTask:\n{prompt}"
+        )
+        try:
+            result = subprocess.run(
+                command, input=full_prompt, capture_output=True, text=True, env=env,
+                timeout=self.timeout, cwd=tempfile.gettempdir(),
+            )
+        except FileNotFoundError as e:
+            raise _provider_error(self.provider, "`codex` CLI not found") from e
+        except subprocess.TimeoutExpired as e:
+            raise _provider_error(self.provider, f"timed out after {self.timeout}s", code=408) from e
+        finally:
+            if schema_path:
+                Path(schema_path).unlink(missing_ok=True)
+        combined = "\n".join(x for x in (result.stderr.strip(), result.stdout.strip()) if x)
+        if result.returncode != 0:
+            raise _provider_error(self.provider, combined)
+        events = []
+        for line in result.stdout.splitlines():
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        error = next((e for e in events if e.get("type") in {"error", "turn.failed"}), None)
+        if error:
+            raise _provider_error(self.provider, json.dumps(error))
+        usage = {}
+        for event in reversed(events):
+            if isinstance(event.get("usage"), dict):
+                usage = event["usage"]
+                break
+        self._meta(
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            cache_read_tokens=usage.get("cached_input_tokens", 0),
+            cache_write_tokens=0,
+            cost_usd=0.0,
+        )
+        return _find_codex_text(events)
+
+
+class LLMRouter:
+    """Resolve logical agent roles to providers with failover and circuit breaking."""
+
+    def __init__(self, routes: dict[str, list[RouteTarget]], policy: str = "priority"):
+        if policy not in {"priority", "round_robin"}:
+            raise ValueError(f"unknown LLM route policy {policy!r}")
+        self.routes = routes
+        self.policy = policy
+        self.records: list[dict] = []
+        self._clients: dict[str, _MeasuredClient] = {}
+        self._offsets = defaultdict(int)
+        self._blocked_until: dict[str, float] = {}
+
+    def supports_role(self, role: str) -> bool:
+        return role in self.routes and bool(self.routes[role])
+
+    def mark(self) -> int:
+        return len(self.records)
+
+    def records_since(self, mark: int) -> list[dict]:
+        return [dict(r) for r in self.records[mark:]]
+
+    def _client(self, provider: str) -> _MeasuredClient:
+        if provider in self._clients:
+            return self._clients[provider]
+        if provider == "claude_cli":
+            client = ClaudeCliClient()
+        elif provider == "codex_cli":
+            client = CodexCliClient()
+        else:  # parse_route prevents this; keep the boundary fail-closed.
+            raise ValueError(f"unknown LLM provider {provider!r}")
+        self._clients[provider] = client
+        return client
+
+    def _ordered(self, role: str) -> list[RouteTarget]:
+        targets = list(self.routes.get(role) or [])
+        if not targets:
+            raise ValueError(f"no LLM route configured for role {role!r}")
+        if self.policy == "round_robin" and role in {"hypothesis", "wildcard"}:
+            offset = self._offsets[role] % len(targets)
+            return targets[offset:] + targets[:offset]
+        return targets
+
+    def complete(self, system: str, prompt: str, model: str, max_tokens: int = 1024) -> str:
+        role = model
+        now = time.monotonic()
+        errors: list[str] = []
+        available_at: list[float] = []
+        for index, target in enumerate(self._ordered(role)):
+            blocked = self._blocked_until.get(target.provider, 0.0)
+            if blocked > now:
+                available_at.append(blocked)
+                errors.append(f"{target.provider} circuit open")
+                continue
+            client = self._client(target.provider)
+            started = time.perf_counter()
+            client.last_meta = {}
+            try:
+                text = client.complete(system, prompt, target.model, max_tokens, role=role)
+            except LLMProviderError as e:
+                latency = round((time.perf_counter() - started) * 1000)
+                retry = e.retry_after or (settings.llm_provider_backoff_seconds
+                                            if e.retryable else 86400)
+                # Authentication/configuration failures are also circuit-broken;
+                # retrying an unchanged login on every candidate only burns time.
+                self._blocked_until[target.provider] = now + retry
+                available_at.append(now + retry)
+                self.records.append({
+                    "at": datetime.now(timezone.utc).isoformat(), "role": role,
+                    "provider": target.provider, "model": target.model, "status": "error",
+                    "latency_ms": latency, "input_tokens": 0, "output_tokens": 0,
+                    "cache_read_tokens": 0, "cache_write_tokens": 0, "cost_usd": 0.0,
+                    "rate_limited": e.rate_limited, "retry_after": e.retry_after,
+                    "error": str(e)[:500], "failover_index": index,
+                })
+                errors.append(str(e))
+                continue
+            except LLMOutputError as e:
+                latency = round((time.perf_counter() - started) * 1000)
+                self.records.append({
+                    "at": datetime.now(timezone.utc).isoformat(), "role": role,
+                    "provider": target.provider, "model": target.model, "status": "invalid_output",
+                    "latency_ms": latency, "input_tokens": 0, "output_tokens": 0,
+                    "cache_read_tokens": 0, "cache_write_tokens": 0, "cost_usd": 0.0,
+                    "rate_limited": False, "retry_after": None,
+                    "error": str(e)[:500], "failover_index": index,
+                })
+                raise
+            latency = round((time.perf_counter() - started) * 1000)
+            meta = client.last_meta
+            self.records.append({
+                "at": datetime.now(timezone.utc).isoformat(), "role": role,
+                "provider": target.provider, "model": target.model, "status": "ok",
+                "latency_ms": latency,
+                "input_tokens": int(meta.get("input_tokens") or 0),
+                "output_tokens": int(meta.get("output_tokens") or 0),
+                "cache_read_tokens": int(meta.get("cache_read_tokens") or 0),
+                "cache_write_tokens": int(meta.get("cache_write_tokens") or 0),
+                "cost_usd": float(meta.get("cost_usd") or 0.0),
+                "rate_limited": False, "retry_after": None, "error": "",
+                "failover_index": index,
+            })
+            if self.policy == "round_robin" and role in {"hypothesis", "wildcard"}:
+                self._offsets[role] += 1
+            return text
+        wait = settings.llm_provider_backoff_seconds
+        if available_at:
+            wait = max(1, round(min(available_at) - now))
+        raise LLMProvidersExhausted(role, errors, wait)
+
+    def stats(self, mark: int = 0) -> dict:
+        records = self.records[mark:]
+        providers = Counter(r["provider"] for r in records if r["status"] == "ok")
+        return {
+            "calls": sum(r["status"] == "ok" for r in records),
+            "failed_calls": sum(r["status"] != "ok" for r in records),
+            "input_tokens": sum(r["input_tokens"] for r in records),
+            "output_tokens": sum(r["output_tokens"] for r in records),
+            "cache_read_tokens": sum(r["cache_read_tokens"] for r in records),
+            "cost_usd": round(sum(r["cost_usd"] for r in records), 6),
+            "failovers": sum(r.get("failover_index", 0) > 0 and r["status"] == "ok"
+                             for r in records),
+            "providers": dict(providers),
+        }
+
+
+def _role_routes() -> dict[str, list[RouteTarget]]:
+    backend = settings.llm_backend.lower()
+    if backend == "cli":
+        return {
+            "hypothesis": parse_route("claude_cli:sonnet"),
+            "hypothesis_strong": parse_route("claude_cli:sonnet"),
+            "wildcard": parse_route("claude_cli:opus"),
+            "synthesis": parse_route("claude_cli:haiku"),
+            "synthesis_strong": parse_route("claude_cli:sonnet"),
+            "audit": parse_route("claude_cli:opus"),
+        }
+    if backend not in {"subscriptions", "hybrid"}:  # hybrid: pre-release alias
+        raise ValueError("POPPER_LLM_BACKEND must be subscriptions or cli")
+    return {
+        "hypothesis": parse_route(settings.llm_hypothesis_route),
+        "hypothesis_strong": parse_route(settings.llm_hypothesis_strong_route),
+        "wildcard": parse_route(settings.llm_wildcard_route),
+        "synthesis": parse_route(settings.llm_synthesis_route),
+        "synthesis_strong": parse_route(settings.llm_synthesis_strong_route),
+        "audit": parse_route(settings.llm_audit_route),
+    }
+
+
+def get_llm() -> LLMRouter:
+    """Build a validated role router from environment-driven settings."""
+    return LLMRouter(_role_routes(), policy=settings.llm_route_policy)
 
 
 class StubLLM:
@@ -132,3 +541,6 @@ class StubLLM:
     def complete(self, system: str, prompt: str, model: str, max_tokens: int = 1024) -> str:
         self.calls.append({"system": system, "prompt": prompt, "model": model})
         return self.responses.pop(0)
+
+    def supports_role(self, role: str) -> bool:
+        return False

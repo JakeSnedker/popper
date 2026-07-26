@@ -145,6 +145,13 @@ class SqliteMemory(AlphaMemory):
                 (json.dumps(signature), hypothesis_id),
             )
 
+    def set_embedding(self, hypothesis_id: str, embedding: list[float], tags: dict) -> None:
+        with self._lock, self._connect() as con:
+            con.execute(
+                "UPDATE hypotheses SET embedding = ?, tags = ? WHERE id = ?",
+                (json.dumps(embedding), json.dumps(tags), hypothesis_id),
+            )
+
     def add_feature_gap(self, name: str, kind: str, source: str, detail: str,
                         example: str | None = None) -> dict:
         now = datetime.now(timezone.utc).isoformat()

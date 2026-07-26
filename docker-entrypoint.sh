@@ -1,28 +1,18 @@
 #!/bin/sh
-# Worker loop = Popper's "cron". run_hunt.py already time-boxes each run, so we just
-# run it, sleep, and run again forever. compose's `restart: unless-stopped` handles
-# crashes/reboots. This is the whole scheduling story — no host cron needed.
-#
-# ponytail: a shell while-loop, not a real scheduler. That's deliberate — the run is
-# already wall-clock bounded and idempotent (every artifact goes to the shared map).
-# Upgrade path (discrete scheduled runs) is documented in SHARE_README.md via
-# `docker compose run`; reach for it only if you need exact clock times.
-set -e
+# Containers package the shared store/dashboard and deterministic smoke. Subscription
+# generation runs on the host, where each operator authenticates official CLIs.
+set -u
 
-RUN_MODE="${RUN_MODE:-llm}"          # seeded ($0, no API) | llm (spends Anthropic)
-RUN_MINUTES="${RUN_MINUTES:-60}"     # wall-clock budget per llm batch
-RUN_ITERATIONS="${RUN_ITERATIONS:-12}"
-RUN_SLEEP="${RUN_SLEEP:-30}"         # pause between runs (seconds)
+RUN_MODE="${RUN_MODE:-seeded}"
+RUN_SLEEP="${RUN_SLEEP:-3600}"
 
-echo "[entrypoint] mode=$RUN_MODE minutes=$RUN_MINUTES iterations=$RUN_ITERATIONS sleep=${RUN_SLEEP}s store=${POPPER_STORE:-sqlite}"
+if [ "$RUN_MODE" = "llm" ]; then
+    echo "[entrypoint] RUN_MODE=llm is host-only: log into claude/codex and run scripts/run_hunt.py"
+    exit 2
+fi
 
+echo "[entrypoint] seeded smoke mode store=${POPPER_STORE:-sqlite}"
 while true; do
-    if [ "$RUN_MODE" = "seeded" ]; then
-        python scripts/run_hunt.py --seeded || echo "[entrypoint] run failed, retrying after sleep"
-    else
-        python scripts/run_hunt.py --minutes "$RUN_MINUTES" --iterations "$RUN_ITERATIONS" \
-            || echo "[entrypoint] run failed, retrying after sleep"
-    fi
-    echo "[entrypoint] batch done; sleeping ${RUN_SLEEP}s"
+    python scripts/run_hunt.py --seeded || echo "[entrypoint] seeded smoke failed"
     sleep "$RUN_SLEEP"
 done

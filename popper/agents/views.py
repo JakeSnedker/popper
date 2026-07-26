@@ -54,6 +54,23 @@ class BlindView:
     def is_stale(self, h) -> bool:
         return self._mem.is_stale(h)
 
+    def assess(self, h) -> dict:
+        """One embedding + one complete-map scan for gatekeeper decisions."""
+        return self._mem.assess(h)
+
+    def map_context(self, limit: int = 12) -> dict:
+        """Prompt-ready blind context from one backend read, bounded for tokens."""
+        hypotheses = self._mem.list_hypotheses()
+        counts = {edge: 0 for edge in EDGE_TYPES}
+        for hypothesis in hypotheses:
+            etype = edge_type(hypothesis)
+            counts[etype] = counts.get(etype, 0) + 1
+        return {
+            "claims": [h.claim for h in hypotheses[:limit]],
+            "coverage": counts,
+            "whitespace": [edge for edge in EDGE_TYPES if counts.get(edge, 0) == 0],
+        }
+
     def coverage(self) -> dict:
         """edge_type -> count over the whole map (the exploration axis)."""
         counts = {e: 0 for e in EDGE_TYPES}

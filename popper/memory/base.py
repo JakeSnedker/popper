@@ -1,9 +1,4 @@
-"""The alpha-memory interface. Subsystems depend on this, never on a concrete store.
-
-Novelty / staleness / enrichment are CONCRETE here (brute-force cosine over the
-embeddings returned by list_hypotheses) so both SQLite and Supabase get them for
-free — the map is small enough that O(n) scan is fine (spec/04: no pgvector yet).
-"""
+"""Backend-neutral alpha memory and novelty assessment."""
 
 from abc import ABC, abstractmethod
 
@@ -19,13 +14,16 @@ from popper.memory.embed import cosine, get_embedder
 from popper.memory.map import STALE, categorize
 
 
+class EmbeddingSpaceMismatch(RuntimeError):
+    """Existing and configured embeddings cannot be compared honestly."""
+
+
 def embed_text(h: Hypothesis) -> str:
-    """Stable string rep the embedder sees: claim + sorted feature names."""
     return f"{h.claim.strip()} || features: {' '.join(sorted(h.required_features))}".strip()
 
 
 class AlphaMemory(ABC):
-    """Append-mostly store of the lab's entire reasoning history + the alpha map."""
+    """Append-mostly record of the lab plus a performance-blind alpha map."""
 
     _embedder = None
 
@@ -35,7 +33,6 @@ class AlphaMemory(ABC):
             self._embedder = get_embedder()
         return self._embedder
 
-    # --- writes (each assigns an id if absent and returns the stored artifact) ---
     @abstractmethod
     def add_hypothesis(self, h: Hypothesis) -> Hypothesis: ...
 
@@ -55,10 +52,12 @@ class AlphaMemory(ABC):
     def set_status(self, hypothesis_id: str, status: HypothesisStatus) -> None: ...
 
     @abstractmethod
-    def set_behaviour(self, hypothesis_id: str, signature: dict) -> None:
-        """Attach the post-test behaviour_signature (surprise-relocation input)."""
+    def set_behaviour(self, hypothesis_id: str, signature: dict) -> None: ...
 
-    # --- reads ---
+    @abstractmethod
+    def set_embedding(self, hypothesis_id: str, embedding: list[float], tags: dict) -> None:
+        """Maintenance hook used by the explicit re-embedding command."""
+
     @abstractmethod
     def get_hypothesis(self, hypothesis_id: str) -> Hypothesis | None: ...
 
@@ -66,17 +65,14 @@ class AlphaMemory(ABC):
     def list_hypotheses(self, status: HypothesisStatus | None = None) -> list[Hypothesis]: ...
 
     @abstractmethod
-    def record(self, hypothesis_id: str) -> dict:
-        """Full artifact trail for one hypothesis: specs, experiments, scorecards, verdicts."""
+    def record(self, hypothesis_id: str) -> dict: ...
 
     @abstractmethod
     def stats(self) -> dict: ...
 
     @abstractmethod
-    def validated_equity_curves(self) -> list[list[float]]:
-        """Equity curves of SURVIVED/PROMOTED alphas — the correlation pool."""
+    def validated_equity_curves(self) -> list[list[float]]: ...
 
-    # --- feature-gap ledger (optional backend support) ---
     def add_feature_gap(self, name: str, kind: str, source: str, detail: str,
                         example: str | None = None) -> dict:
         return {"name": name, "kind": kind, "source": source, "detail": detail,
@@ -85,48 +81,72 @@ class AlphaMemory(ABC):
     def list_feature_gaps(self, status: str | None = None, limit: int = 50) -> list[dict]:
         return []
 
-    # --- research trace ledger (optional backend support) ---
     def add_research_event(self, event: dict) -> dict:
         return event
 
     def list_research_events(self, run_id: str | None = None, limit: int = 100) -> list[dict]:
         return []
 
-    # --- the alpha map (concrete: shared by every backend) ---
-    def _enrich(self, h: Hypothesis) -> Hypothesis:
-        """Embed + tag + score novelty on insert. Preserves caller-set values."""
+    def prepare(self, h: Hypothesis) -> Hypothesis:
+        """Embed and tag once, before novelty and evaluation reuse the candidate."""
         updates: dict = {}
         if not h.embedding:
             updates["embedding"] = self.embedder.embed(embed_text(h))
-        emb = updates.get("embedding", h.embedding)
         if not h.tags:
-            updates["tags"] = categorize(h)
-        if not h.novelty_score:
-            _, sim = self._nearest_embedding(emb)
-            updates["novelty_score"] = round(1.0 if sim < 0 else max(0.0, 1.0 - sim), 4)
+            tags = categorize(h)
+            tags["embedding_backend"] = getattr(self.embedder, "name", "unknown")
+            updates["tags"] = tags
         return h.model_copy(update=updates) if updates else h
 
-    def _nearest_embedding(self, emb: list[float], exclude: str | None = None) -> tuple[str | None, float]:
+    def _nearest_embedding(self, emb: list[float], exclude: str | None = None,
+                           hypotheses: list[Hypothesis] | None = None) -> tuple[str | None, float]:
         best_id, best_sim = None, -1.0
-        for other in self.list_hypotheses():
+        mismatched = set()
+        for other in hypotheses if hypotheses is not None else self.list_hypotheses():
             if other.id == exclude or not other.embedding:
+                continue
+            if len(emb) != len(other.embedding):
+                mismatched.add(len(other.embedding))
                 continue
             sim = cosine(emb, other.embedding)
             if sim > best_sim:
                 best_id, best_sim = other.id, sim
+        if mismatched:
+            raise EmbeddingSpaceMismatch(
+                f"configured embedding dimension {len(emb)} conflicts with stored dimensions "
+                f"{sorted(mismatched)}; run scripts/reembed_hypotheses.py before research"
+            )
         return best_id, best_sim
 
+    def assess(self, h: Hypothesis) -> dict:
+        """Prepare + nearest + novelty in one embedding and one map scan."""
+        prepared = self.prepare(h)
+        nearest_id, similarity = self._nearest_embedding(
+            prepared.embedding, exclude=prepared.id,
+        )
+        novelty = 1.0 if similarity < 0 else max(0.0, 1.0 - similarity)
+        return {
+            "hypothesis": prepared,
+            "nearest_id": nearest_id,
+            "similarity": similarity,
+            "novelty": novelty,
+            "stale": similarity >= STALE,
+        }
+
+    def _enrich(self, h: Hypothesis) -> Hypothesis:
+        prepared = self.prepare(h)
+        if prepared.novelty_score:
+            return prepared
+        _, similarity = self._nearest_embedding(prepared.embedding, exclude=prepared.id)
+        novelty = 1.0 if similarity < 0 else max(0.0, 1.0 - similarity)
+        return prepared.model_copy(update={"novelty_score": round(novelty, 4)})
+
     def nearest(self, h: Hypothesis) -> tuple[str | None, float]:
-        """(id, cosine similarity) of the closest prior hypothesis."""
-        emb = h.embedding or self.embedder.embed(embed_text(h))
-        return self._nearest_embedding(emb, exclude=h.id)
+        prepared = self.prepare(h)
+        return self._nearest_embedding(prepared.embedding, exclude=prepared.id)
 
     def novelty(self, h: Hypothesis) -> float:
-        """0..1 distance to the nearest prior alpha (1.0 = no neighbour / brand new)."""
-        _, sim = self.nearest(h)
-        return 1.0 if sim < 0 else max(0.0, 1.0 - sim)
+        return self.assess(h)["novelty"]
 
     def is_stale(self, h: Hypothesis, threshold: float = STALE) -> bool:
-        """True if a near-duplicate already exists (nearest cosine >= threshold)."""
-        _, sim = self.nearest(h)
-        return sim >= threshold
+        return self.nearest(h)[1] >= threshold

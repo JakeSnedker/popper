@@ -11,12 +11,12 @@ duplicated databases. Enforce this at the memory-view layer (`04`), not by trust
 ## The roster
 | Agent | Job | Sees | Hidden from it | Runtime model (DECISION) |
 |-------|-----|------|----------------|--------------------------|
-| **Hypothesis** | generate novel, falsifiable alphas aimed at sparse regions / whitespace | the map (coverage, gaps) | **results / performance** | Sonnet (high volume) |
-| **Gatekeeper** | novelty check + route to a provisional category | map + embeddings | performance | Sonnet / Haiku |
-| **Workers** (×N async, 1 per live category) | refine/exploit *within* one category (intentional local tunnelling) | their category's results + behaviour | other categories | Opus 4.8 |
-| **Director** (conductor) | steer generation, allocate compute, prune dead categories, hold the **explore/exploit dial** | everything | — | Opus 4.8 |
-| **Wildcard** | inject off-map random ideas, seed brand-new categories | the map (to know what's off it) | results | Sonnet |
-| **Synthesis** | Hypothesis → valid DSL StrategySpec, with compiler-feedback repair loop | the DSL + one hypothesis | performance | Opus 4.8 |
+| **Hypothesis** | generate novel, falsifiable alphas aimed at sparse regions / whitespace | the map (coverage, gaps) | **results / performance** | batched Claude/Codex subscription route |
+| **Gatekeeper** | novelty check + route to a provisional category | map + embeddings | performance | deterministic, no LLM |
+| **Workers** (×N async, 1 per live category) | refine/exploit *within* one category (intentional local tunnelling) | their category's results + behaviour | other categories | deterministic optimizer, no LLM |
+| **Director** (conductor) | steer generation, allocate compute, prune dead categories, hold the **explore/exploit dial** | everything | — | deterministic scheduler, no LLM |
+| **Wildcard** | inject off-map random ideas, seed brand-new categories | the map (to know what's off it) | results | strong Claude/Codex route |
+| **Synthesis** | Hypothesis → valid DSL StrategySpec, with compiler-feedback repair loop | the DSL + one hypothesis | performance | cheap first, strong escalation |
 
 > Synthesis is listed separately (it's the `Hypothesis → StrategySpec` compiler agent from the repo
 > architecture). Hypothesis proposes the *claim*; Synthesis expresses it in the DSL (`01`).

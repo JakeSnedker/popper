@@ -10,7 +10,6 @@ import tempfile
 import pytest
 
 from popper.agents import StubLLM, propose, screen, synthesize, view
-from popper.agents.llm import _extract_text
 from popper.agents.views import BlindView, MapEntry
 from popper.artifacts import (
     ExperimentResult,
@@ -30,11 +29,6 @@ def _mem() -> SqliteMemory:
     return SqliteMemory(os.path.join(tempfile.mkdtemp(), "t.db"), embedder=LocalEmbedder())
 
 
-def test_anthropic_text_extraction_handles_multiple_content_blocks():
-    payload = {"content": [{"type": "thinking", "thinking": "x"}, {"type": "text", "text": "hello"}]}
-    assert _extract_text(payload) == "hello"
-
-
 # --- Hypothesis agent: emits a valid Hypothesis aimed via the blind map ---
 
 def test_hypothesis_agent_emits_hypothesis():
@@ -49,9 +43,9 @@ def test_hypothesis_agent_emits_hypothesis():
     assert h.claim.startswith("London-session")
     assert h.mechanism and h.required_features == ["atr_14", "session_london"]
     assert h.expected_regime.value == "trending"
-    assert llm.calls[0]["model"] == "claude-sonnet-5"  # model split wired
-    # the prompt is built from the map only (whitespace listed), never results
-    assert "whitespace" in llm.calls[0]["prompt"]
+    assert llm.calls[0]["model"] == "hypothesis"  # logical role; router chooses provider/model
+    # the prompt is built from the map only (zero-coverage labels), never results
+    assert "Zero-coverage" in llm.calls[0]["prompt"]
 
 
 def test_hypothesis_agent_repairs_malformed_json():
@@ -114,7 +108,7 @@ def test_synthesis_repairs_until_valid():
     assert spec.hypothesis_id == h.id      # linked to the hypothesis
     assert len(llm.calls) == 2             # repaired exactly once
     assert "INVALID" in llm.calls[1]["prompt"]  # validator error fed back
-    assert llm.calls[0]["model"] == "claude-opus-4-8"
+    assert [call["model"] for call in llm.calls] == ["synthesis", "synthesis_strong"]
 
 
 def test_synthesis_raises_after_cap():

@@ -42,6 +42,14 @@ export const api = {
   architecture: () => get<Architecture>("/api/architecture"),
   dataSources: () => get<DataSourcesResponse>("/api/data-sources"),
   stats: () => get<Stats>("/api/stats"),
+  llmConfig: () => get<{
+    backend: string;
+    policy: string;
+    batch_size: number;
+    fidelity_mode: string;
+    survivor_audit: boolean;
+    routes: Record<string, string>;
+  }>("/api/llm-config"),
   featureGaps: (limit = 12) => get<{ feature_gaps: FeatureGap[] }>(`/api/feature-gaps?limit=${limit}`),
   runResearch: (req: ResearchRunRequest) => post<ResearchRunSummary>("/api/research", req),
   researchEvents: (runId?: string, limit = 80) =>
