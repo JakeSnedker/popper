@@ -131,8 +131,13 @@ class SupabaseMemory(AlphaMemory):
             if exp_ids else []
         )
         verdicts = self.client.table("verdicts").select("*").eq("hypothesis_id", hypothesis_id).execute().data
-        return {"hypothesis": h.model_dump(mode="json"), "specs": specs,
-                "experiments": exps, "scorecards": scs, "verdicts": verdicts}
+        return {
+            "hypothesis": h.model_dump(mode="json"),
+            "specs": [StrategySpec(**row).model_dump(mode="json") for row in specs],
+            "experiments": [ExperimentResult(**row).model_dump(mode="json") for row in exps],
+            "scorecards": [Scorecard(**row).model_dump(mode="json") for row in scs],
+            "verdicts": [Verdict(**row).model_dump(mode="json") for row in verdicts],
+        }
 
     def stats(self) -> dict:
         by_status = {s.value: 0 for s in HypothesisStatus}
@@ -158,6 +163,51 @@ class SupabaseMemory(AlphaMemory):
         if run_id:
             q = q.eq("run_id", run_id)
         return q.order("created_at", desc=True).order("id", desc=True).limit(limit).execute().data
+
+    def latest_verdict_types(self) -> dict[str, str]:
+        rows, start, page = [], 0, 1000
+        while True:
+            batch = (self.client.table("verdicts")
+                     .select("id,hypothesis_id,type,created_at")
+                     .order("created_at", desc=True).order("id", desc=True)
+                     .range(start, start + page - 1).execute().data)
+            rows.extend(batch)
+            if len(batch) < page:
+                break
+            start += page
+        latest = {}
+        for row in rows:
+            latest.setdefault(row["hypothesis_id"], row["type"])
+        return latest
+
+    def recent_verdicts(self, limit: int = 20) -> list[dict]:
+        verdicts = (self.client.table("verdicts").select("*")
+                    .order("created_at", desc=True).order("id", desc=True)
+                    .limit(limit).execute().data)
+        if not verdicts:
+            return []
+        hypothesis_ids = list({row["hypothesis_id"] for row in verdicts})
+        experiment_ids = list({row["experiment_id"] for row in verdicts})
+        hypotheses = (self.client.table("hypotheses").select("id,claim")
+                      .in_("id", hypothesis_ids).execute().data)
+        experiments = (self.client.table("experiments").select("id,raw_metrics")
+                       .in_("id", experiment_ids).execute().data)
+        scorecards = (self.client.table("scorecards")
+                      .select("experiment_id,deflated_sharpe")
+                      .in_("experiment_id", experiment_ids).execute().data)
+        claims = {row["id"]: row["claim"] for row in hypotheses}
+        metrics = {row["id"]: row.get("raw_metrics") or {} for row in experiments}
+        scores = {row["experiment_id"]: row for row in scorecards}
+        return [{
+            "hypothesis_id": row["hypothesis_id"],
+            "claim": claims.get(row["hypothesis_id"], ""),
+            "type": row["type"],
+            "reasons": row.get("reasons") or [],
+            "created_at": row["created_at"],
+            "profit_factor": metrics.get(row["experiment_id"], {}).get("profit_factor"),
+            "expectancy_net": metrics.get(row["experiment_id"], {}).get("expectancy_net"),
+            "deflated_sharpe": scores.get(row["experiment_id"], {}).get("deflated_sharpe"),
+        } for row in verdicts]
 
     def add_feature_gap(self, name: str, kind: str, source: str, detail: str,
                         example: str | None = None) -> dict:

@@ -11,7 +11,7 @@ dist/
 # Popper
 .env
 *.db
-holiday.log
+*.log
 supabase/.temp/
 
 # Node / frontend

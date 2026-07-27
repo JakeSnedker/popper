@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     llm_synthesis_route: str = "claude_cli:haiku,codex_cli:default"
     llm_synthesis_strong_route: str = "codex_cli:default,claude_cli:sonnet"
     llm_audit_route: str = "codex_cli:default,claude_cli:opus"
-    llm_batch_size: int = 5
+    llm_batch_size: int = 10
     llm_provider_backoff_seconds: int = 300
     llm_rate_limit_backoff_seconds: int = 2700
     llm_survivor_audit: bool = True

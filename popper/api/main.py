@@ -181,18 +181,12 @@ def _pca_2d(embeddings: list[list[float]]) -> list[tuple[float, float]]:
     return [(round(float(px), 4), round(float(py), 4)) for px, py in proj]
 
 
-def _latest_verdict_type(rec: dict) -> str | None:
-    verdicts = rec.get("verdicts", [])
-    if not verdicts:
-        return None
-    return max(verdicts, key=lambda v: v["created_at"])["type"]
-
-
 @app.get("/api/map")
 def get_map() -> dict:
     mem = get_memory()
     view = BlindView(mem)
     hyps = [h for h in mem.list_hypotheses() if h.embedding]
+    verdicts = mem.latest_verdict_types()
     coords = _pca_2d([h.embedding for h in hyps])
     points = [
         {
@@ -200,9 +194,7 @@ def get_map() -> dict:
             "claim": h.claim,
             "edge_type": edge_type(h),
             "novelty": h.novelty_score,
-            # ponytail: one record() per hypothesis just for the verdict — fine at
-            # map scale (~10s); add a verdicts-per-hypothesis query if it grows.
-            "verdict": _latest_verdict_type(mem.record(h.id)),
+            "verdict": verdicts.get(h.id),
             "x": x,
             "y": y,
         }
@@ -213,30 +205,7 @@ def get_map() -> dict:
 
 @app.get("/api/verdicts")
 def recent_verdicts(limit: int = 20) -> dict:
-    mem = get_memory()
-    rows = []
-    # ponytail: O(n) walk over record() instead of a repo method — works on every
-    # backend; add recent_verdicts() to the repos when the map outgrows a scan.
-    for h in mem.list_hypotheses():
-        rec = mem.record(h.id)
-        exps = {e["id"]: e for e in rec["experiments"]}
-        scs = {sc["experiment_id"]: sc for sc in rec["scorecards"]}
-        for v in rec["verdicts"]:
-            exp = exps.get(v["experiment_id"], {})
-            sc = scs.get(v["experiment_id"], {})
-            rows.append({
-                "hypothesis_id": h.id,
-                "claim": h.claim,
-                "type": v["type"],
-                "reasons": v["reasons"],
-                "created_at": v["created_at"],
-                "profit_factor": exp.get("raw_metrics", {}).get("profit_factor"),
-                # informational cost drag — never part of the verdict itself
-                "expectancy_net": exp.get("raw_metrics", {}).get("expectancy_net"),
-                "deflated_sharpe": sc.get("deflated_sharpe"),
-            })
-    rows.sort(key=lambda r: r["created_at"], reverse=True)
-    return {"verdicts": rows[:limit]}
+    return {"verdicts": get_memory().recent_verdicts(limit)}
 
 
 @app.get("/api/hypotheses/{hypothesis_id}/mc-cone")

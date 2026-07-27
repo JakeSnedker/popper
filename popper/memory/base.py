@@ -87,6 +87,38 @@ class AlphaMemory(ABC):
     def list_research_events(self, run_id: str | None = None, limit: int = 100) -> list[dict]:
         return []
 
+    def latest_verdict_types(self) -> dict[str, str]:
+        """Latest verdict per hypothesis; network stores should override with a bulk query."""
+        latest = {}
+        for hypothesis in self.list_hypotheses():
+            verdicts = self.record(hypothesis.id).get("verdicts", [])
+            if verdicts:
+                latest[hypothesis.id] = max(verdicts, key=lambda row: row["created_at"])["type"]
+        return latest
+
+    def recent_verdicts(self, limit: int = 20) -> list[dict]:
+        """Dashboard verdict feed; network stores should override with bulk queries."""
+        rows = []
+        for hypothesis in self.list_hypotheses():
+            record = self.record(hypothesis.id)
+            experiments = {row["id"]: row for row in record.get("experiments", [])}
+            scorecards = {row["experiment_id"]: row for row in record.get("scorecards", [])}
+            for verdict in record.get("verdicts", []):
+                experiment = experiments.get(verdict["experiment_id"], {})
+                scorecard = scorecards.get(verdict["experiment_id"], {})
+                rows.append({
+                    "hypothesis_id": hypothesis.id,
+                    "claim": hypothesis.claim,
+                    "type": verdict["type"],
+                    "reasons": verdict["reasons"],
+                    "created_at": verdict["created_at"],
+                    "profit_factor": experiment.get("raw_metrics", {}).get("profit_factor"),
+                    "expectancy_net": experiment.get("raw_metrics", {}).get("expectancy_net"),
+                    "deflated_sharpe": scorecard.get("deflated_sharpe"),
+                })
+        rows.sort(key=lambda row: row["created_at"], reverse=True)
+        return rows[:limit]
+
     def prepare(self, h: Hypothesis) -> Hypothesis:
         """Embed and tag once, before novelty and evaluation reuse the candidate."""
         updates: dict = {}
