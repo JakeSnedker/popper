@@ -189,11 +189,11 @@ def main() -> int:
     if not settings.supabase_url or not settings.supabase_key:
         print("set POPPER_SUPABASE_URL and POPPER_SUPABASE_KEY first")
         return 1
-    from supabase import create_client
+    from popper.memory.supabase_client import create_configured_client
 
     dry_run = "--dry-run" in sys.argv
     cleanup_events = "--cleanup-redundant-events" in sys.argv
-    client = create_client(settings.supabase_url, settings.supabase_key)
+    client = create_configured_client()
     local = _read_local(settings.db_path)
     id_maps = {table: {} for table in TABLES}
 

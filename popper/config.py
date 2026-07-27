@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # supabase (only needed when store == "supabase")
     supabase_url: str = ""
     supabase_key: str = ""
+    supabase_email: str = ""
+    supabase_password: str = ""
+    auth_required: bool = False
 
     # Subscription-only runtime. Each operator authenticates the official
     # Claude and Codex CLIs with their own Claude.ai / ChatGPT account.

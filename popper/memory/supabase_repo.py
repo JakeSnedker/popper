@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from popper.config import settings
 from popper.memory.base import AlphaMemory
+from popper.memory.supabase_client import create_configured_client
 
 _PREFIX = {"hypotheses": "H", "specs": "S", "experiments": "E", "scorecards": "SC",
            "verdicts": "V", "research_events": "RE", "feature_gaps": "FG"}
@@ -26,13 +27,9 @@ _ID_RETRIES = 15  # recompute-and-retry attempts on the id PK race (many concurr
 
 class SupabaseMemory(AlphaMemory):
     def __init__(self):
-        try:
-            from supabase import create_client
-        except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("POPPER_STORE=supabase requires `pip install supabase`") from exc
         if not settings.supabase_url or not settings.supabase_key:
             raise RuntimeError("Set POPPER_SUPABASE_URL and POPPER_SUPABASE_KEY")
-        self.client = create_client(settings.supabase_url, settings.supabase_key)
+        self.client = create_configured_client()
 
     def _next_id(self, table: str) -> str:
         # Highest existing id + 1, via ORDER BY id DESC LIMIT 1 — NOT select-all-then-max

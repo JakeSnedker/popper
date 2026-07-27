@@ -23,9 +23,9 @@ def main() -> int:
         print(f"{ts} FAIL keepalive: POPPER_SUPABASE_URL / POPPER_SUPABASE_KEY not set")
         return 1
     try:
-        from supabase import create_client
+        from popper.memory.supabase_client import create_configured_client
 
-        client = create_client(settings.supabase_url, settings.supabase_key)
+        client = create_configured_client()
         client.table(_TABLE).select("id").limit(1).execute()
     except Exception as exc:  # noqa: BLE001 — any error means the ping didn't land
         print(f"{ts} FAIL keepalive: {type(exc).__name__}: {exc}")
