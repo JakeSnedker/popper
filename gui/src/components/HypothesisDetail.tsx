@@ -1,4 +1,4 @@
-import { Fragment } from "react";
+import { Fragment, useState } from "react";
 import { api } from "../api";
 import { useAsync } from "../lib/useAsync";
 import { FalsificationBreakdown } from "./FalsificationBreakdown";
@@ -6,6 +6,7 @@ import { ImprovementChart } from "./ImprovementChart";
 import { MonteCarloCone } from "./MonteCarloCone";
 import { ScorecardView } from "./ScorecardView";
 import { StatusBadge, VerdictBadge } from "./StatusBadge";
+import { StrategyActions } from "./StrategyActions";
 import { ErrorState, LoadingRows } from "./States";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -18,12 +19,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export function HypothesisDetail({ id, onClose }: { id: string; onClose: () => void }) {
+  const [diagnosticVersion, setDiagnosticVersion] = useState(0);
   const { data, loading, error, reload } = useAsync(() => api.record(id), [id]);
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative w-full max-w-xl h-full bg-ink-800 border-l border-ink-600 overflow-y-auto">
+      <div className="relative w-full max-w-3xl h-full bg-ink-800 border-l border-ink-600 overflow-y-auto">
         <div className="sticky top-0 bg-ink-800/95 backdrop-blur border-b border-ink-600 px-5 py-3 flex items-center justify-between">
           <span className="text-xs font-mono text-slate-500">{id}</span>
           <button
@@ -71,6 +73,13 @@ export function HypothesisDetail({ id, onClose }: { id: string; onClose: () => v
                 </div>
               </div>
 
+              {data.specs.length > 0 && (
+                <StrategyActions
+                  record={data}
+                  onDiagnosticComplete={() => setDiagnosticVersion((value) => value + 1)}
+                />
+              )}
+
               {data.specs.map((s) => (
                 <Section key={s.id} title={`Strategy Spec · ${s.id} (DSL v${s.dsl_version})`}>
                   <div className="card p-3 text-sm space-y-1">
@@ -114,9 +123,9 @@ export function HypothesisDetail({ id, onClose }: { id: string; onClose: () => v
                 </Section>
               )}
 
-              {data.experiments.length > 0 && (
+              {data.specs.length > 0 && (
                 <Section title="Monte Carlo · risk cone (bootstrap)">
-                  <MonteCarloCone hypothesisId={id} />
+                  <MonteCarloCone hypothesisId={id} refreshKey={diagnosticVersion} />
                 </Section>
               )}
 

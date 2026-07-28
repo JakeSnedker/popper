@@ -73,7 +73,19 @@ export function Sidebar({ subsystems, pipeline, cross, view, onNavigate }: Props
           onClick={() => onNavigate({ kind: "home" })}
         />
         <NavLink
-          label="Roadmap"
+          label="Survivors"
+          dot="bg-emerald-400"
+          active={isActive(view, { kind: "survivors" })}
+          onClick={() => onNavigate({ kind: "survivors" })}
+        />
+        <NavLink
+          label="Total Stats"
+          dot="bg-cyan-400"
+          active={isActive(view, { kind: "analytics" })}
+          onClick={() => onNavigate({ kind: "analytics" })}
+        />
+        <NavLink
+          label="System Phases"
           active={isActive(view, { kind: "roadmap" })}
           onClick={() => onNavigate({ kind: "roadmap" })}
         />

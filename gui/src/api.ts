@@ -1,4 +1,6 @@
+import { accessToken } from "./auth";
 import type {
+  AnalyticsResponse,
   Architecture,
   DataSourcesResponse,
   HypothesisRecord,
@@ -6,17 +8,27 @@ import type {
   FeatureGap,
   MapResponse,
   MonteCarloCone,
+  MonteCarloDiagnosticResult,
+  DiagnosticStatus,
   PhasesResponse,
   ResearchRunRequest,
   ResearchEvent,
   ResearchRunSummary,
   Stats,
+  SurvivorTest,
   TimelinePoint,
   VerdictFeedItem,
 } from "./lib/types";
 
+async function authorizedFetch(url: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  const token = await accessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return fetch(url, { ...init, headers });
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  const res = await authorizedFetch(url, init);
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
     throw new Error((detail as { detail?: string }).detail || `${res.status} ${res.statusText}`);
@@ -36,12 +48,30 @@ async function post<T>(url: string, body: unknown): Promise<T> {
   });
 }
 
+async function download(url: string): Promise<void> {
+  const res = await authorizedFetch(url);
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error((detail as { detail?: string }).detail || `${res.status} ${res.statusText}`);
+  }
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const filename = disposition.match(/filename="?([^";]+)"?/)?.[1] ?? "popper-download";
+  const href = URL.createObjectURL(await res.blob());
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(href);
+}
+
 export const api = {
   health: () => get<{ ok: boolean; version: string; store: string }>("/api/health"),
   phases: () => get<PhasesResponse>("/api/phases"),
   architecture: () => get<Architecture>("/api/architecture"),
   dataSources: () => get<DataSourcesResponse>("/api/data-sources"),
   stats: () => get<Stats>("/api/stats"),
+  analytics: () => get<AnalyticsResponse>("/api/analytics"),
+  survivors: () => get<{ survivors: SurvivorTest[] }>("/api/survivors"),
   llmConfig: () => get<{
     backend: string;
     policy: string;
@@ -64,6 +94,15 @@ export const api = {
   map: () => get<MapResponse>("/api/map"),
   mcCone: (id: string) =>
     get<MonteCarloCone>(`/api/hypotheses/${encodeURIComponent(id)}/mc-cone`),
+  diagnostics: (id: string) =>
+    get<DiagnosticStatus>(`/api/hypotheses/${encodeURIComponent(id)}/diagnostics`),
+  runMonteCarlo: (id: string) =>
+    post<MonteCarloDiagnosticResult>(
+      `/api/hypotheses/${encodeURIComponent(id)}/diagnostics/monte-carlo`,
+      {}
+    ),
+  downloadForge: (id: string) =>
+    download(`/api/hypotheses/${encodeURIComponent(id)}/forge-download`),
   verdicts: (limit = 20) => get<{ verdicts: VerdictFeedItem[] }>(`/api/verdicts?limit=${limit}`),
   timeline: (id: string) =>
     get<{ experiments: TimelinePoint[] }>(`/api/timeline?hypothesis_id=${encodeURIComponent(id)}`),

@@ -1,5 +1,8 @@
 """FastAPI app serving the dashboard: build phases + the alpha-memory trail."""
 
+from collections import Counter, defaultdict
+from datetime import datetime
+from statistics import fmean, median
 from typing import Literal
 
 import numpy as np
@@ -9,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from popper import __version__
 from popper.agents.views import BlindView
+from popper.api.extensions import install_extensions
 from popper.architecture import architecture
 from popper.artifacts import Hypothesis, HypothesisStatus
 from popper.config import settings
@@ -27,6 +31,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+install_extensions(app)
 
 
 class ResearchRunRequest(BaseModel):
@@ -77,6 +82,298 @@ def data_sources() -> dict:
 @app.get("/api/stats")
 def get_stats() -> dict:
     return get_memory().stats()
+
+
+_GATE_ORDER = [
+    "gate_signal_edge",
+    "gate0_leakage",
+    "gate1_walkforward",
+    "gate2_robustness",
+    "gate3_mc_ruin",
+    "gate4_multiple_testing",
+]
+_GATE_LABELS = {
+    "gate_signal_edge": "Signal edge",
+    "gate0_leakage": "Leakage / look-ahead",
+    "gate1_walkforward": "Walk-forward OOS",
+    "gate2_robustness": "Parameter robustness",
+    "gate3_mc_ruin": "Monte Carlo ruin",
+    "gate4_multiple_testing": "Multiple testing",
+    "other": "Other / legacy reason",
+}
+
+
+def _timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _duration_summary(values: list[float]) -> dict:
+    if not values:
+        return {"count": 0, "avg_seconds": None, "median_seconds": None, "p90_seconds": None}
+    ordered = sorted(values)
+    p90 = ordered[round(0.9 * (len(ordered) - 1))]
+    return {
+        "count": len(values),
+        "avg_seconds": round(fmean(values), 2),
+        "median_seconds": round(median(values), 2),
+        "p90_seconds": round(p90, 2),
+    }
+
+
+def _proposer_attribution(mem, events: list[dict] | None = None) -> tuple[dict, list[dict]]:
+    """Link proposal-call telemetry to the hypothesis stored later in the same iteration.
+
+    Older runs did not persist call metadata, so missing attribution stays explicitly unknown.
+    """
+    events = events if events is not None else mem.list_research_events(limit=50_000)
+    by_iteration = {}
+    hypothesis_iterations = {}
+    for event in events:
+        key = (event.get("run_id"), event.get("iteration"), event.get("engine"))
+        if (event.get("role") == "hypothesis" and event.get("stage") == "propose"
+                and event.get("status") == "ok"):
+            calls = (event.get("payload") or {}).get("llm_calls") or []
+            call = next((row for row in reversed(calls) if row.get("status") == "ok"), None)
+            if call:
+                by_iteration[key] = {
+                    "provider": call.get("provider"),
+                    "model": call.get("model"),
+                    "role": call.get("role"),
+                }
+        if event.get("role") == "gauntlet" and event.get("stage") == "evaluate":
+            hypothesis_id = (event.get("artifact_ids") or {}).get("hypothesis_id")
+            if hypothesis_id:
+                hypothesis_iterations[hypothesis_id] = key
+    return {
+        hypothesis_id: by_iteration[key]
+        for hypothesis_id, key in hypothesis_iterations.items()
+        if key in by_iteration
+    }, events
+
+
+def _failed_gate(diagnostics: dict, reasons: list[str]) -> str | None:
+    for key in _GATE_ORDER:
+        value = diagnostics.get(key)
+        if isinstance(value, dict) and value.get("passed") is False:
+            return key
+    reason = " ".join(reasons).lower()
+    if "signal edge" in reason:
+        return "gate_signal_edge"
+    if "leak" in reason or "look-ahead" in reason:
+        return "gate0_leakage"
+    if "forward" in reason or "out-of-sample" in reason or "walk-forward" in reason:
+        return "gate1_walkforward"
+    if "parameter" in reason or "surface" in reason:
+        return "gate2_robustness"
+    if "ruin" in reason or "drawdown" in reason:
+        return "gate3_mc_ruin"
+    if "pbo" in reason or "sharpe" in reason or "overfit" in reason:
+        return "gate4_multiple_testing"
+    return "other" if reasons else None
+
+
+def _test_rows(mem, hypotheses: list, attribution: dict) -> list[dict]:
+    rows = []
+    records = mem.analysis_records([hypothesis.id for hypothesis in hypotheses])
+    for hypothesis in hypotheses:
+        record = records.get(hypothesis.id, {})
+        specs = {row["id"]: row for row in record.get("specs", [])}
+        experiments = {row["id"]: row for row in record.get("experiments", [])}
+        scorecards = {row["experiment_id"]: row for row in record.get("scorecards", [])}
+        proposer = attribution.get(hypothesis.id, {
+            "provider": None, "model": None, "role": None,
+        })
+        for verdict in record.get("verdicts", []):
+            experiment = experiments.get(verdict["experiment_id"], {})
+            spec = specs.get(experiment.get("spec_id"), {})
+            scorecard = scorecards.get(verdict["experiment_id"], {})
+            raw = experiment.get("raw_metrics") or {}
+            diagnostics = scorecard.get("diagnostics") or {}
+            duration = None
+            if spec.get("created_at") and verdict.get("created_at"):
+                duration = max(0.0, (
+                    _timestamp(verdict["created_at"]) - _timestamp(spec["created_at"])
+                ).total_seconds())
+            rows.append({
+                "hypothesis_id": hypothesis.id,
+                "claim": hypothesis.claim,
+                "mechanism": hypothesis.mechanism,
+                "rationale": hypothesis.rationale,
+                "status": hypothesis.status.value,
+                "edge_type": hypothesis.tags.get("edge_type") or edge_type(hypothesis),
+                "expected_regime": hypothesis.expected_regime.value,
+                "novelty": hypothesis.novelty_score,
+                "parent_id": hypothesis.parent_id,
+                "created_at": hypothesis.created_at.isoformat(),
+                "verdict": verdict["type"],
+                "verdict_id": verdict["id"],
+                "reasons": verdict.get("reasons") or [],
+                "completed_at": verdict["created_at"],
+                "duration_seconds": round(duration, 2) if duration is not None else None,
+                "experiment_id": experiment.get("id"),
+                "dataset": experiment.get("dataset"),
+                "trades_n": experiment.get("trades_n", 0),
+                "metrics": {
+                    "profit_factor": raw.get("profit_factor"),
+                    "profit_factor_net": raw.get("profit_factor_net"),
+                    "expectancy": raw.get("expectancy"),
+                    "expectancy_net": raw.get("expectancy_net"),
+                    "sharpe": raw.get("sharpe"),
+                    "win_rate": raw.get("win_rate"),
+                    "max_drawdown": raw.get("max_drawdown"),
+                    "deflated_sharpe": scorecard.get("deflated_sharpe"),
+                    "pbo": scorecard.get("pbo"),
+                    "robustness": scorecard.get("robustness"),
+                    "regime_stability": scorecard.get("regime_stability"),
+                    "correlation": scorecard.get("correlation"),
+                },
+                "failed_gate": (
+                    _failed_gate(diagnostics, verdict.get("reasons") or [])
+                    if verdict["type"] == "kill" else None
+                ),
+                "evidence": {
+                    "diagnostics_recorded": bool(diagnostics),
+                    "gates_recorded": sum(key in diagnostics for key in _GATE_ORDER),
+                    "costs_recorded": any(
+                        raw.get(key) is not None
+                        for key in ("expectancy_net", "profit_factor_net", "avg_cost_r")
+                    ),
+                },
+                "proposer": proposer,
+            })
+    return rows
+
+
+@app.get("/api/survivors")
+def survivors() -> dict:
+    mem = get_memory()
+    hypotheses = [
+        *mem.list_hypotheses(HypothesisStatus.PROMOTED),
+        *mem.list_hypotheses(HypothesisStatus.SURVIVED),
+    ]
+    attribution, _ = _proposer_attribution(mem)
+    tests = _test_rows(mem, hypotheses, attribution)
+    latest = {}
+    for row in sorted(tests, key=lambda item: item["completed_at"], reverse=True):
+        latest.setdefault(row["hypothesis_id"], row)
+    ordered = sorted(
+        latest.values(),
+        key=lambda row: (row["status"] != "promoted", row["completed_at"]),
+    )
+    return {"survivors": ordered}
+
+
+@app.get("/api/analytics")
+def analytics() -> dict:
+    mem = get_memory()
+    hypotheses = mem.list_hypotheses()
+    attribution, events = _proposer_attribution(mem)
+    tests = _test_rows(mem, hypotheses, attribution)
+
+    outcomes = Counter(row["verdict"] for row in tests)
+    passed = outcomes["survive"] + outcomes["promote"]
+    tested_hypotheses = {row["hypothesis_id"] for row in tests}
+    durations = [row["duration_seconds"] for row in tests if row["duration_seconds"] is not None]
+
+    categories = defaultdict(lambda: {
+        "generated": 0, "tests": 0, "killed": 0, "survived": 0, "promoted": 0,
+    })
+    for hypothesis in hypotheses:
+        category = hypothesis.tags.get("edge_type") or edge_type(hypothesis)
+        categories[category]["generated"] += 1
+    for row in tests:
+        item = categories[row["edge_type"]]
+        item["tests"] += 1
+        item[{"kill": "killed", "survive": "survived", "promote": "promoted"}[row["verdict"]]] += 1
+
+    category_rows = []
+    for name, item in categories.items():
+        item = dict(item)
+        item["name"] = name
+        item["pass_rate"] = round(
+            100 * (item["survived"] + item["promoted"]) / item["tests"], 2
+        ) if item["tests"] else 0.0
+        category_rows.append(item)
+    category_rows.sort(key=lambda item: (-item["tests"], item["name"]))
+
+    model_groups = defaultdict(lambda: {"tests": 0, "killed": 0, "passed": 0})
+    for row in tests:
+        proposer = row["proposer"]
+        key = (proposer.get("provider"), proposer.get("model"))
+        item = model_groups[key]
+        item["tests"] += 1
+        if row["verdict"] == "kill":
+            item["killed"] += 1
+        else:
+            item["passed"] += 1
+    model_rows = []
+    for (provider, model), item in model_groups.items():
+        model_rows.append({
+            "provider": provider,
+            "model": model,
+            **item,
+            "pass_rate": round(100 * item["passed"] / item["tests"], 2) if item["tests"] else 0.0,
+        })
+    model_rows.sort(key=lambda item: (-item["tests"], item["provider"] or ""))
+
+    failures = Counter(row["failed_gate"] for row in tests if row["verdict"] == "kill")
+    failure_rows = [{
+        "key": key,
+        "label": _GATE_LABELS.get(key, key.replace("_", " ")),
+        "count": count,
+        "pct_of_failures": round(100 * count / outcomes["kill"], 2) if outcomes["kill"] else 0.0,
+    } for key, count in failures.most_common()]
+
+    stage_defs = {
+        ("hypothesis", "propose"): ("Hypothesis generation", "LLM creates a batch of falsifiable claims."),
+        ("synthesis", "compile"): ("DSL synthesis", "LLM translates a claim and repairs validator failures."),
+        ("gauntlet", "evaluate"): ("Backtest + gauntlet", "Runner and fail-fast falsification tests execute."),
+        ("worker", "refine"): ("Worker refinement", "Optimizer searches a survivor or near-miss locally."),
+    }
+    event_groups = defaultdict(list)
+    for event in events:
+        stage_key = (event.get("role"), event.get("stage"))
+        if stage_key in stage_defs:
+            event_groups[(event.get("run_id"), event.get("iteration"), event.get("engine"), *stage_key)].append(event)
+    stage_values = defaultdict(list)
+    for key, group in event_groups.items():
+        started = [_timestamp(row["created_at"]) for row in group if row.get("status") == "running"]
+        ended = [_timestamp(row["created_at"]) for row in group if row.get("status") != "running"]
+        if started and ended:
+            duration = (max(ended) - min(started)).total_seconds()
+            if duration >= 0:
+                stage_values[key[-2:]].append(duration)
+    stages = [{
+        "key": f"{role}.{stage}",
+        "label": label,
+        "description": description,
+        **_duration_summary(stage_values[(role, stage)]),
+    } for (role, stage), (label, description) in stage_defs.items()]
+
+    return {
+        "totals": {
+            "generated": len(hypotheses),
+            "tests": len(tests),
+            "tested_hypotheses": len(tested_hypotheses),
+            "awaiting_verdict": len(hypotheses) - len(tested_hypotheses),
+            "killed": outcomes["kill"],
+            "survived": outcomes["survive"],
+            "promoted": outcomes["promote"],
+            "pass_rate": round(100 * passed / len(tests), 2) if tests else 0.0,
+            "fail_rate": round(100 * outcomes["kill"] / len(tests), 2) if tests else 0.0,
+        },
+        "test_duration": _duration_summary(durations),
+        "stages": stages,
+        "failure_gates": failure_rows,
+        "categories": category_rows,
+        "models": model_rows,
+        "attribution": {
+            "attributed_tests": sum(bool(row["proposer"].get("model")) for row in tests),
+            "unattributed_tests": sum(not row["proposer"].get("model") for row in tests),
+            "note": "Model attribution is available only for runs that recorded per-call telemetry.",
+        },
+        "event_sample_size": len(events),
+    }
 
 
 @app.get("/api/llm-config")

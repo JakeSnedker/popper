@@ -136,6 +136,67 @@ class SupabaseMemory(AlphaMemory):
             "verdicts": [Verdict(**row).model_dump(mode="json") for row in verdicts],
         }
 
+    def analysis_records(self, hypothesis_ids: list[str]) -> dict[str, dict]:
+        """Fetch aggregate-report fields in bulk instead of one network trail per hypothesis."""
+        if not hypothesis_ids:
+            return {}
+        wanted = set(hypothesis_ids)
+        records = {
+            hypothesis_id: {"specs": [], "experiments": [], "scorecards": [], "verdicts": []}
+            for hypothesis_id in hypothesis_ids
+        }
+
+        def paged(table: str, columns: str, filter_col: str | None = None,
+                  values: list[str] | None = None) -> list[dict]:
+            rows, start, page = [], 0, 1000
+            while True:
+                query = self.client.table(table).select(columns)
+                if filter_col and values and len(values) <= 100:
+                    query = query.in_(filter_col, values)
+                batch = query.order("id").range(start, start + page - 1).execute().data
+                rows.extend(batch)
+                if len(batch) < page:
+                    break
+                start += page
+            return rows
+
+        specs = paged(
+            "specs", "id,hypothesis_id,created_at", "hypothesis_id", hypothesis_ids,
+        )
+        specs = [row for row in specs if row["hypothesis_id"] in wanted]
+        spec_owner = {row["id"]: row["hypothesis_id"] for row in specs}
+        for row in specs:
+            records[row["hypothesis_id"]]["specs"].append(row)
+
+        spec_ids = list(spec_owner)
+        experiments = paged(
+            "experiments", "id,spec_id,dataset,trades_n,raw_metrics", "spec_id", spec_ids,
+        ) if spec_ids else []
+        experiments = [row for row in experiments if row["spec_id"] in spec_owner]
+        experiment_owner = {row["id"]: spec_owner[row["spec_id"]] for row in experiments}
+        for row in experiments:
+            records[spec_owner[row["spec_id"]]]["experiments"].append(row)
+
+        experiment_ids = list(experiment_owner)
+        scorecards = paged(
+            "scorecards",
+            "id,experiment_id,robustness,regime_stability,correlation,deflated_sharpe,pbo,diagnostics",
+            "experiment_id", experiment_ids,
+        ) if experiment_ids else []
+        for row in scorecards:
+            hypothesis_id = experiment_owner.get(row["experiment_id"])
+            if hypothesis_id:
+                records[hypothesis_id]["scorecards"].append(row)
+
+        verdicts = paged(
+            "verdicts", "id,hypothesis_id,experiment_id,type,reasons,created_at",
+            "hypothesis_id", hypothesis_ids,
+        )
+        for row in verdicts:
+            if row["hypothesis_id"] in wanted:
+                records[row["hypothesis_id"]]["verdicts"].append(row)
+        return records
+
     def stats(self) -> dict:
         by_status = {s.value: 0 for s in HypothesisStatus}
         for s in HypothesisStatus:

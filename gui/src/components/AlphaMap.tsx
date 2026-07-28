@@ -15,6 +15,7 @@ const H = 380;
 const PAD = 40;
 
 type Placed = MapPoint & { px: number; py: number };
+type MapFilter = "all" | "promote" | "survive" | "kill" | "none";
 
 function place(points: MapPoint[]): Placed[] {
   const xs = points.map((p) => p.x);
@@ -79,7 +80,11 @@ function Tooltip({ p }: { p: Placed }) {
 export function AlphaMap({ onSelect }: { onSelect: (id: string) => void }) {
   const { data, loading, error, reload } = useAsync(() => api.map(), [], 10000);
   const [hover, setHover] = useState<Placed | null>(null);
+  const [filter, setFilter] = useState<MapFilter>("all");
   const placed = useMemo(() => (data ? place(data.points) : []), [data]);
+  const visible = placed.filter((point) =>
+    filter === "all" ? true : (point.verdict ?? "none") === filter
+  );
 
   if (loading) return <div className="skeleton h-80 w-full" />;
   if (error) return <ErrorState message={error} onRetry={reload} />;
@@ -90,16 +95,29 @@ export function AlphaMap({ onSelect }: { onSelect: (id: string) => void }) {
 
   return (
     <div className="card p-4">
-      {/* legend: verdict colors (semantic, never the accent) */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2">
-        {VERDICT_LEGEND.map((v) => (
-          <span key={v.key} className="flex items-center gap-1.5 text-xs text-slate-400">
-            <span className="h-2 w-2 rounded-full" style={{ background: VERDICT_HEX[v.key] }} />
-            {v.label}
-          </span>
-        ))}
+      {/* verdict legend doubles as a filter so rare survivors are one click away */}
+      <div className="flex flex-wrap items-center gap-1.5 mb-2">
+        <button
+          onClick={() => { setFilter("all"); setHover(null); }}
+          className={`pill border ${filter === "all" ? "border-accent bg-accent/15 text-slate-100" : "border-ink-600 text-slate-400 hover:bg-ink-700"}`}
+        >
+          All {data.points.length}
+        </button>
+        {VERDICT_LEGEND.map((v) => {
+          const count = data.points.filter((point) => (point.verdict ?? "none") === v.key).length;
+          return (
+            <button
+              key={v.key}
+              onClick={() => { setFilter(v.key); setHover(null); }}
+              className={`pill border ${filter === v.key ? "border-slate-400 bg-ink-700 text-slate-100" : "border-ink-600 text-slate-400 hover:bg-ink-700"}`}
+            >
+              <span className="h-2 w-2 rounded-full" style={{ background: VERDICT_HEX[v.key] }} />
+              {v.label} {count}
+            </button>
+          );
+        })}
         <span className="ml-auto text-[10px] font-mono text-slate-600">
-          {data.points.length} hypotheses · 2D PCA · auto-refresh 10s
+          showing {visible.length} · 2D PCA · auto-refresh 10s
         </span>
       </div>
 
@@ -111,7 +129,7 @@ export function AlphaMap({ onSelect }: { onSelect: (id: string) => void }) {
           aria-label="Scatter of hypotheses in embedding space, colored by verdict (table view below)"
           onMouseLeave={() => setHover(null)}
         >
-          {placed.map((p) => (
+          {visible.map((p) => (
             <circle
               key={p.id}
               cx={p.px}
@@ -167,7 +185,7 @@ export function AlphaMap({ onSelect }: { onSelect: (id: string) => void }) {
               </tr>
             </thead>
             <tbody>
-              {data.points.map((p) => (
+              {visible.map((p) => (
                 <tr
                   key={p.id}
                   className="border-b border-ink-700 hover:bg-ink-700 cursor-pointer"

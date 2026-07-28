@@ -37,12 +37,23 @@ function BuildSpec({ phaseId }: { phaseId: number }) {
     <div className="card p-4 border-l-2 border-l-accent">
       <div className="flex items-center gap-2 mb-2">
         <span className="text-[10px] font-mono text-slate-600">Phase {phase.id}</span>
-        <span className="text-sm font-medium text-slate-200">What gets built here</span>
+        <span className="text-sm font-medium text-slate-200">How this phase works</span>
       </div>
-      <p className="text-sm text-slate-400">{phase.goal}</p>
-      <p className="text-xs text-slate-600 mt-2">
-        <span className="text-slate-500">Acceptance:</span> {phase.done_when}
-      </p>
+      <p className="text-sm text-slate-400 leading-relaxed">{phase.goal}</p>
+      <ol className="grid md:grid-cols-3 gap-2 mt-4">
+        {phase.process.map((step, index) => (
+          <li key={step} className="rounded-lg bg-ink-900/60 border border-ink-600 p-2.5 text-xs text-slate-400 leading-relaxed">
+            <span className="font-mono text-accent mr-1.5">{index + 1}.</span>{step}
+          </li>
+        ))}
+      </ol>
+      <div className="grid md:grid-cols-2 gap-3 mt-4 text-xs">
+        <div><span className="text-slate-600 uppercase text-[10px]">Output</span><p className="text-slate-300 mt-1">{phase.output}</p></div>
+        <div><span className="text-slate-600 uppercase text-[10px]">Human check</span><p className="text-slate-400 mt-1">{phase.inspect}</p></div>
+      </div>
+      <div className="mt-3 pt-3 border-t border-ink-600 text-xs text-amber-200/80">
+        <span className="text-amber-400/70">Current limitation:</span> {phase.current_gap}
+      </div>
     </div>
   );
 }
@@ -58,7 +69,6 @@ export function SubsystemView({
 }) {
   const st = SUB_STATUS[subsystem.status];
   const stats = useAsync(() => api.stats(), []);
-  const isLive = subsystem.id === "memory" || subsystem.id === "falsify";
 
   return (
     <div className="max-w-5xl space-y-6">
@@ -84,8 +94,9 @@ export function SubsystemView({
       </div>
 
       <IOContract s={subsystem} />
+      <BuildSpec phaseId={subsystem.phase} />
 
-      {/* live data for built subsystems, build-spec for planned ones */}
+      {/* live data for the two subsystems with dedicated drill-down tables */}
       {subsystem.id === "memory" && (
         <>
           {stats.loading ? (
@@ -109,14 +120,6 @@ export function SubsystemView({
         </div>
       )}
 
-      {!isLive && <BuildSpec phaseId={subsystem.phase} />}
-
-      {!isLive && (
-        <p className="text-xs text-slate-600">
-          This station isn't built yet — it lands in Phase {subsystem.phase}. The contract above is
-          fixed, so it can be developed in isolation against the {subsystem.consumes} it consumes.
-        </p>
-      )}
     </div>
   );
 }

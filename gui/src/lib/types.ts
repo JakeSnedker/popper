@@ -174,12 +174,43 @@ export interface MonteCarloCone {
   trades_n: number;
 }
 
+export interface DiagnosticStatus {
+  hypothesis_id: string;
+  diagnostics: {
+    name: "monte_carlo";
+    completed: boolean;
+    runnable: boolean;
+    reason: string | null;
+    experiment_id: string | null;
+  }[];
+}
+
+export interface MonteCarloDiagnosticResult {
+  hypothesis_id: string;
+  name: "monte_carlo";
+  source: "existing" | "backfill";
+  persisted: boolean;
+  experiment_id: string;
+  gate: {
+    p_profit: number;
+    p_ruin: number;
+    dd_mean: number;
+    dd_95: number;
+    dd_worst: number;
+  } | null;
+  cone: Omit<MonteCarloCone, "verdict">;
+}
+
 export interface Phase {
   id: number;
   name: string;
   goal: string;
   status: "done" | "in_progress" | "todo";
   done_when: string;
+  process: string[];
+  output: string;
+  inspect: string;
+  current_gap: string;
 }
 
 export interface PhasesResponse {
@@ -328,8 +359,116 @@ export interface DataSourcesResponse {
   sources: DataSource[];
 }
 
+export interface ProposerInfo {
+  provider: string | null;
+  model: string | null;
+  role: string | null;
+}
+
+export interface TestMetrics {
+  profit_factor: number | null;
+  profit_factor_net: number | null;
+  expectancy: number | null;
+  expectancy_net: number | null;
+  sharpe: number | null;
+  win_rate: number | null;
+  max_drawdown: number | null;
+  deflated_sharpe: number | null;
+  pbo: number | null;
+  robustness: number | null;
+  regime_stability: number | null;
+  correlation: number | null;
+}
+
+export interface SurvivorTest {
+  hypothesis_id: string;
+  claim: string;
+  mechanism: string;
+  rationale: string;
+  status: "survived" | "promoted";
+  edge_type: string;
+  expected_regime: string;
+  novelty: number;
+  parent_id: string | null;
+  created_at: string;
+  verdict: "survive" | "promote";
+  verdict_id: string;
+  reasons: string[];
+  completed_at: string;
+  duration_seconds: number | null;
+  experiment_id: string | null;
+  dataset: string | null;
+  trades_n: number;
+  metrics: TestMetrics;
+  failed_gate: null;
+  evidence: {
+    diagnostics_recorded: boolean;
+    gates_recorded: number;
+    costs_recorded: boolean;
+  };
+  proposer: ProposerInfo;
+}
+
+export interface DurationSummary {
+  count: number;
+  avg_seconds: number | null;
+  median_seconds: number | null;
+  p90_seconds: number | null;
+}
+
+export interface AnalyticsResponse {
+  totals: {
+    generated: number;
+    tests: number;
+    tested_hypotheses: number;
+    awaiting_verdict: number;
+    killed: number;
+    survived: number;
+    promoted: number;
+    pass_rate: number;
+    fail_rate: number;
+  };
+  test_duration: DurationSummary;
+  stages: (DurationSummary & {
+    key: string;
+    label: string;
+    description: string;
+  })[];
+  failure_gates: {
+    key: string;
+    label: string;
+    count: number;
+    pct_of_failures: number;
+  }[];
+  categories: {
+    name: string;
+    generated: number;
+    tests: number;
+    killed: number;
+    survived: number;
+    promoted: number;
+    pass_rate: number;
+  }[];
+  models: {
+    provider: string | null;
+    model: string | null;
+    tests: number;
+    killed: number;
+    passed: number;
+    pass_rate: number;
+  }[];
+  attribution: {
+    attributed_tests: number;
+    unattributed_tests: number;
+    note: string;
+  };
+  event_sample_size: number;
+}
+
 // app navigation
 export type View =
   | { kind: "home" }
+  | { kind: "survivors" }
+  | { kind: "analytics" }
   | { kind: "roadmap" }
   | { kind: "subsystem"; id: string };

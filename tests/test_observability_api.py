@@ -12,7 +12,14 @@ from fastapi.testclient import TestClient
 
 import popper.memory
 from popper.api.main import app
-from popper.artifacts import ExperimentResult, Hypothesis, Scorecard, StrategySpec, Verdict
+from popper.artifacts import (
+    ExperimentResult,
+    Hypothesis,
+    HypothesisStatus,
+    Scorecard,
+    StrategySpec,
+    Verdict,
+)
 from popper.memory import LocalEmbedder
 from popper.memory.sqlite_repo import SqliteMemory
 
@@ -49,6 +56,7 @@ def _seed(mem: SqliteMemory) -> dict:
                             reasons=["pbo>0.5"], created_at=_ts(3)))
     mem.add_verdict(Verdict(hypothesis_id=h1.id, experiment_id=e2.id, type="survive",
                             created_at=_ts(5)))
+    mem.set_status(h1.id, HypothesisStatus.SURVIVED)
 
     h2 = mem.add_hypothesis(Hypothesis(
         claim="price mean-reverts to VWAP after a stretched deviation",
@@ -63,6 +71,7 @@ def _seed(mem: SqliteMemory) -> dict:
     mem.add_scorecard(Scorecard(experiment_id=e3.id, robustness=0.1, deflated_sharpe=0.05))
     mem.add_verdict(Verdict(hypothesis_id=h2.id, experiment_id=e3.id, type="kill",
                             reasons=["ruin"], created_at=_ts(4)))
+    mem.set_status(h2.id, HypothesisStatus.KILLED)
 
     h3 = mem.add_hypothesis(Hypothesis(
         claim="US30 rises on Mondays", mechanism="calendar flow"))  # no verdict yet
@@ -174,6 +183,33 @@ def test_research_events_endpoint(client):
     assert rows[0]["role"] == "hypothesis"
     assert rows[0]["artifact_ids"] == {"hypothesis_id": ids["h1"]}
     assert rows[0]["payload"] == {"novelty": 0.9}
+
+
+def test_analytics_and_survivors_are_honest_about_coverage(client):
+    c, ids = client
+    body = c.get("/api/analytics").json()
+
+    assert body["totals"] == {
+        "generated": 3,
+        "tests": 3,
+        "tested_hypotheses": 2,
+        "awaiting_verdict": 1,
+        "killed": 2,
+        "survived": 1,
+        "promoted": 0,
+        "pass_rate": 33.33,
+        "fail_rate": 66.67,
+    }
+    failures = {row["key"]: row["count"] for row in body["failure_gates"]}
+    assert failures == {"gate3_mc_ruin": 1, "gate4_multiple_testing": 1}
+    assert body["attribution"]["attributed_tests"] == 0
+    assert body["attribution"]["unattributed_tests"] == 3
+
+    survivors = c.get("/api/survivors").json()["survivors"]
+    assert [row["hypothesis_id"] for row in survivors] == [ids["h1"]]
+    assert survivors[0]["verdict"] == "survive"
+    assert survivors[0]["evidence"]["diagnostics_recorded"] is True
+    assert survivors[0]["proposer"]["model"] is None
 
 
 # --- /api/data-sources: only real parquets are offered (no silent path drift) ---

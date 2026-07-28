@@ -6,6 +6,7 @@ import { FeatureGaps } from "../components/FeatureGaps";
 import { PipelineMap } from "../components/PipelineMap";
 import { ResearchControls } from "../components/ResearchControls";
 import { ResearchTrace } from "../components/ResearchTrace";
+import { SurvivorSpotlight } from "../components/SurvivorSpotlight";
 import { VerdictStream } from "../components/VerdictStream";
 
 function ProgressRing({ pct }: { pct: number }) {
@@ -58,6 +59,11 @@ export function ControlCenter({
           </button>
         </div>
       </div>
+
+      <SurvivorSpotlight
+        onSelect={onSelectHypothesis}
+        onOpenAll={() => onNavigate({ kind: "survivors" })}
+      />
 
       {/* operator controls */}
       <section className="grid lg:grid-cols-3 gap-4 items-start">

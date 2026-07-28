@@ -93,8 +93,17 @@ function Stat({ label, value, color }: { label: string; value: string; color?: s
   );
 }
 
-export function MonteCarloCone({ hypothesisId }: { hypothesisId: string }) {
-  const { data: c, loading, error } = useAsync(() => api.mcCone(hypothesisId), [hypothesisId]);
+export function MonteCarloCone({
+  hypothesisId,
+  refreshKey = 0,
+}: {
+  hypothesisId: string;
+  refreshKey?: number;
+}) {
+  const { data: c, loading, error } = useAsync(
+    () => api.mcCone(hypothesisId),
+    [hypothesisId, refreshKey]
+  );
 
   if (loading) return <div className="skeleton h-64 w-full" />;
   // a missing/unusable curve is expected (404), not an alarming error
