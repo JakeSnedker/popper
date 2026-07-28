@@ -13,6 +13,10 @@ dist/
 *.db
 *.log
 supabase/.temp/
+# Broker market data is versioned separately and mounted read-only on each node.
+data/**/*.parquet
+data/**/*.csv
+data/**/*.tkc
 
 # Node / frontend
 node_modules/

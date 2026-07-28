@@ -2,6 +2,9 @@
 
 > *"A theory that is not refutable by any conceivable event is non-scientific."* — Karl Popper
 
+**Private collaborative project. Copyright 2026 Jake Snedker. All rights reserved.**
+Operator access does not make this an open-source project. See `LICENSE`.
+
 Popper is a self-improving system that **discovers, falsifies, and promotes** trading strategies
 with minimal human intervention. The moat is not any single strategy — it's the **discovery engine**
 that generates them, kills the false ones before they cost money, and never re-explores a dead idea.
@@ -19,8 +22,9 @@ to disprove it, not merely show a pretty backtest. This is Popperian science app
 - **Data/execution:** MetaTrader 5 — US30, NAS100 (indices). Portable to Futures (NinjaTrader) later.
 - **Agents:** role-routed official Claude.ai and ChatGPT/Codex subscriptions.
 - **Store:** SQLite locally or shared Supabase alpha memory.
-- **Status:** working autonomous research system. See `docs/NORTH_STAR.md`,
-  `docs/LLM_ROUTING.md`, and `docs/SELF_LEARNING_ROADMAP.md`.
+- **Status:** working autonomous research system moving toward a three-node private alpha release.
+  See `docs/POPPER_NODE_V01_MASTER_PLAN.md`, `docs/NORTH_STAR.md`, and `docs/LLM_ROUTING.md`.
+- **Market data:** never stored in Git. Every operator mounts the same separately versioned dataset.
 
 ## The loop, in one breath
 Propose a falsifiable hypothesis → express it in the Strategy DSL → backtest → run the falsification
