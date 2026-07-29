@@ -17,6 +17,8 @@ supabase/.temp/
 data/**/*.parquet
 data/**/*.csv
 data/**/*.tkc
+data/_inventory/
+data/ftmo-*/
 
 # Node / frontend
 node_modules/
