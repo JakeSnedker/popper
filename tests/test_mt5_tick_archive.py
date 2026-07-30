@@ -120,9 +120,10 @@ def test_export_windows_are_utc_and_end_exclusive():
         export_windows(date(2024, 1, 1), date(2024, 1, 1))
 
 
-def test_normalize_ticks_orders_and_deduplicates():
+def test_normalize_ticks_orders_and_deduplicates_without_reordering_ties():
     ticks = _tick_array(2)
-    duplicated = np.concatenate([ticks[::-1], ticks[:1]])
+    ticks[1]["time_msc"] = ticks[0]["time_msc"]
+    duplicated = np.concatenate([ticks, ticks[:1]])
     frame = normalize_ticks(duplicated)
 
     assert list(frame.columns) == [
@@ -131,6 +132,7 @@ def test_normalize_ticks_orders_and_deduplicates():
     assert len(frame) == 2
     assert frame["time"].dt.tz is not None
     assert frame["time_msc"].is_monotonic_increasing
+    assert frame["bid"].tolist() == [38000.5, 38000.0]
 
 
 class FakeMT5:

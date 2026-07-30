@@ -1,16 +1,36 @@
 # Market Data
 
-Market data is deliberately excluded from Git and Supabase. Each Popper node mounts or copies the same separately versioned, read-only dataset into this directory.
+Market data is deliberately excluded from Git and Supabase. Each Popper node receives the same separately versioned dataset, verifies its aggregate hash, and uses it read-only.
 
-Current research layout:
+Canonical Popper Node v0.1 layout:
 
 ```text
 data/
-  us30/
-    US30_M1.parquet
-    US30_M5.parquet
+  ftmo-us30-v1/
+    dataset-manifest.json
+    ticks/YYYY/MM/YYYY-MM-DD.parquet
+    bars/M1/YYYY/MM.parquet
+    bars/M5/YYYY/MM.parquet
+    bars/M15/YYYY/MM.parquet
 ```
 
-The Popper Node v0.1 target will replace this ad-hoc layout with a dataset manifest, immutable version/hash, partitioned FTMO ticks, canonical M1 bars, and derived M5/M15 bars. See `docs/POPPER_NODE_V01_MASTER_PLAN.md`.
+Current dataset identity:
 
-Never commit broker data, `.tkc` files, CSV exports, account details, or credentials.
+```text
+version: ftmo-us30-v1
+sha256: 7dce1c0c4e6ff630b8a0835bee05183f7902b6bb5a1753a93a600e62f0278c13
+approved UTC period: 2021-10-04 through 2026-07-29 exclusive
+```
+
+Verify a local or received copy:
+
+```powershell
+.venv\Scripts\python.exe scripts\build_ftmo_dataset.py `
+  --dataset-dir data\ftmo-us30-v1 --verify-only
+```
+
+The legacy `data/us30/US30_M1.parquet` and `US30_M5.parquet` layout may still be present for the existing single-timeframe runner. The canonical partitioned dataset replaces it as the versioned source of truth; runner integration follows in the multi-timeframe step.
+
+See `docs/FTMO_CANONICAL_DATASET.md` for source provenance, derivation rules, gap evidence and the documented tick/native-M1 snapshot differences.
+
+Never commit broker data, `.tkc` files, CSV exports, account details, credentials, or local dataset manifests containing broker data inventory.

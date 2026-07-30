@@ -340,7 +340,9 @@ def normalize_ticks(ticks) -> pd.DataFrame:
             frame[column] = default
     frame["time"] = pd.to_datetime(frame["time_msc"], unit="ms", utc=True)
     frame = frame[_TICK_COLUMNS]
-    frame = frame.sort_values(["time_msc", "bid", "ask", "last", "flags"])
+    # MT5 can return several ordered quote changes in the same millisecond.
+    # Stable time-only sorting preserves that broker sequence for bar opens/closes.
+    frame = frame.sort_values("time_msc", kind="stable")
     return frame.drop_duplicates(
         subset=["time_msc", "bid", "ask", "last", "flags"], keep="last",
     ).reset_index(drop=True)

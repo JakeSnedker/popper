@@ -109,4 +109,4 @@ Market data, source inventories, local paths, and account credentials are exclud
 - Export is atomic, partitioned, validated and restartable.
 - Offline tests cover inventory, ZIP safety, missing-only install, normalization and resume behavior.
 
-Next: Step 3 builds the complete canonical tick/M1 dataset, derives M5/M15, measures all gaps, and assigns a distributable dataset version/hash.
+Step 3 is complete. Dataset identity, derivation rules, gap measurements and validation evidence are recorded in `docs/FTMO_CANONICAL_DATASET.md`.
