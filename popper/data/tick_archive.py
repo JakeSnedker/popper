@@ -9,8 +9,9 @@ import re
 import time
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time as dt_time, timedelta, timezone
-from pathlib import Path
-from typing import Callable, Iterable
+from pathlib import Path, PurePosixPath
+from typing import Callable
+from zipfile import ZipFile
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -134,11 +135,165 @@ def inventory_tick_caches(
         })
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_type": "mt5_terminal_cache",
         "terminal_root": str(root),
         "hashes_included": hash_files,
         "group_count": len(groups),
         "file_count": len(rows),
         "groups": groups,
+    }
+
+
+def inventory_tick_archive_zip(
+    archive_path: str | Path,
+    symbol: str = "US30.cash",
+    server: str = "FTMO-Demo",
+    hash_files: bool = False,
+) -> dict:
+    """Inventory a Google Drive/backup ZIP without extracting or changing it."""
+    archive = Path(archive_path).expanduser().resolve()
+    if not archive.is_file():
+        raise FileNotFoundError(f"tick archive does not exist: {archive}")
+    rows = []
+    with ZipFile(archive) as bundle:
+        for info in bundle.infolist():
+            member = PurePosixPath(info.filename)
+            if info.is_dir() or member.is_absolute() or ".." in member.parts:
+                continue
+            if len(member.parts) != 2 or member.parts[0].lower() != symbol.lower():
+                continue
+            if not _MONTH.fullmatch(member.stem) or member.suffix.lower() != ".tkc":
+                continue
+            digest = None
+            if hash_files:
+                hasher = hashlib.sha256()
+                with bundle.open(info, "r") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        hasher.update(chunk)
+                digest = hasher.hexdigest()
+            modified = datetime(*info.date_time, tzinfo=timezone.utc).isoformat()
+            rows.append(TickCacheFile(
+                terminal_id=archive.stem,
+                server=server,
+                symbol=member.parts[0],
+                month=member.stem,
+                path=f"{archive}!{info.filename}",
+                size_bytes=info.file_size,
+                modified_utc=modified,
+                sha256=digest,
+            ))
+
+    rows.sort(key=lambda row: row.month)
+    if rows:
+        months = [row.month for row in rows]
+        start = _month_start(months[0])
+        end = _next_month(_month_start(months[-1]))
+        expected = _months_between(start, end)
+        groups = [{
+            "terminal_id": archive.stem,
+            "server": server,
+            "symbol": rows[0].symbol,
+            "first_month": months[0],
+            "last_month": months[-1],
+            "month_count": len(months),
+            "missing_months": [month for month in expected if month not in months],
+            "total_size_bytes": sum(row.size_bytes for row in rows),
+            "files": [asdict(row) for row in rows],
+        }]
+    else:
+        groups = []
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_type": "zip_tick_archive",
+        "archive_path": str(archive),
+        "archive_size_bytes": archive.stat().st_size,
+        "archive_sha256": _sha256(archive) if hash_files else None,
+        "hashes_included": hash_files,
+        "group_count": len(groups),
+        "file_count": len(rows),
+        "groups": groups,
+    }
+
+
+def install_archive_months(
+    archive_path: str | Path,
+    cache_dir: str | Path,
+    symbol: str = "US30.cash",
+    before_month: str = "202401",
+    apply: bool = False,
+) -> dict:
+    """Install only absent archive months; existing cache files are never replaced."""
+    if not _MONTH.fullmatch(before_month):
+        raise ValueError(f"invalid before-month {before_month!r}")
+    archive = Path(archive_path).expanduser().resolve()
+    destination_root = Path(cache_dir).expanduser().resolve()
+    if not archive.is_file():
+        raise FileNotFoundError(f"tick archive does not exist: {archive}")
+    if apply and not destination_root.is_dir():
+        raise FileNotFoundError(f"MT5 symbol cache does not exist: {destination_root}")
+
+    rows = []
+    with ZipFile(archive) as bundle:
+        members = []
+        for info in bundle.infolist():
+            member = PurePosixPath(info.filename)
+            if (info.is_dir() or member.is_absolute() or ".." in member.parts
+                    or len(member.parts) != 2
+                    or member.parts[0].lower() != symbol.lower()
+                    or member.suffix.lower() != ".tkc"
+                    or not _MONTH.fullmatch(member.stem)
+                    or member.stem >= before_month):
+                continue
+            members.append((member.stem, info))
+        for month, info in sorted(members):
+            destination = destination_root / f"{month}.tkc"
+            if destination.exists():
+                rows.append({
+                    "month": month,
+                    "status": "exists",
+                    "destination": str(destination),
+                    "size_bytes": destination.stat().st_size,
+                })
+                continue
+            status = "would_install"
+            digest = None
+            if apply:
+                temporary = destination.with_suffix(".tkc.importing")
+                hasher = hashlib.sha256()
+                try:
+                    with bundle.open(info, "r") as source, temporary.open("wb") as output:
+                        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                            output.write(chunk)
+                            hasher.update(chunk)
+                    if temporary.stat().st_size != info.file_size:
+                        raise IOError(
+                            f"size mismatch for {month}: {temporary.stat().st_size} != {info.file_size}"
+                        )
+                    # A hard link publishes the complete file atomically and fails
+                    # rather than replacing a destination created concurrently.
+                    os.link(temporary, destination)
+                finally:
+                    if temporary.exists():
+                        temporary.unlink()
+                status = "installed"
+                digest = hasher.hexdigest()
+            rows.append({
+                "month": month,
+                "status": status,
+                "destination": str(destination),
+                "size_bytes": info.file_size,
+                "sha256": digest,
+            })
+    return {
+        "archive": str(archive),
+        "cache_dir": str(destination_root),
+        "symbol": symbol,
+        "before_month": before_month,
+        "applied": apply,
+        "installed": sum(row["status"] == "installed" for row in rows),
+        "would_install": sum(row["status"] == "would_install" for row in rows),
+        "existing": sum(row["status"] == "exists" for row in rows),
+        "months": rows,
     }
 
 

@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 from pathlib import Path
+from zipfile import ZipFile
 
 import numpy as np
 import pandas as pd
@@ -8,6 +9,8 @@ import pytest
 from popper.data.tick_archive import (
     export_ticks,
     export_windows,
+    install_archive_months,
+    inventory_tick_archive_zip,
     inventory_tick_caches,
     normalize_ticks,
     partition_path,
@@ -52,6 +55,57 @@ def test_inventory_groups_months_and_never_changes_sources(tmp_path):
     assert group["missing_months"] == ["202402"]
     assert all(row["sha256"] for row in group["files"])
     assert {path: path.read_bytes() for path in (january, march)} == before
+
+
+def test_zip_inventory_hashes_without_extracting_or_changing_archive(tmp_path):
+    archive = tmp_path / "ftmo.zip"
+    with ZipFile(archive, "w") as bundle:
+        bundle.writestr("US30.cash/202110.tkc", b"october")
+        bundle.writestr("US30.cash/202112.tkc", b"december")
+        bundle.writestr("EURUSD/202110.tkc", b"other")
+        bundle.writestr("../unsafe.tkc", b"unsafe")
+    before = archive.read_bytes()
+
+    result = inventory_tick_archive_zip(archive, hash_files=True)
+
+    assert result["source_type"] == "zip_tick_archive"
+    assert result["file_count"] == 2
+    assert result["archive_sha256"]
+    group = result["groups"][0]
+    assert group["first_month"] == "202110"
+    assert group["last_month"] == "202112"
+    assert group["missing_months"] == ["202111"]
+    assert all(row["sha256"] for row in group["files"])
+    assert archive.read_bytes() == before
+    assert not list(tmp_path.rglob("*.tkc"))
+
+
+def test_archive_install_is_dry_run_by_default_and_never_overwrites(tmp_path):
+    archive = tmp_path / "ftmo.zip"
+    with ZipFile(archive, "w") as bundle:
+        bundle.writestr("US30.cash/202110.tkc", b"old-a")
+        bundle.writestr("US30.cash/202111.tkc", b"old-b")
+        bundle.writestr("US30.cash/202401.tkc", b"overlap")
+    cache = tmp_path / "cache" / "US30.cash"
+    cache.mkdir(parents=True)
+    existing = cache / "202110.tkc"
+    existing.write_bytes(b"keep-me")
+
+    dry_run = install_archive_months(archive, cache)
+    assert dry_run["applied"] is False
+    assert dry_run["would_install"] == 1
+    assert dry_run["existing"] == 1
+    assert existing.read_bytes() == b"keep-me"
+    assert not (cache / "202111.tkc").exists()
+    assert not (cache / "202401.tkc").exists()
+
+    applied = install_archive_months(archive, cache, apply=True)
+    assert applied["installed"] == 1
+    assert applied["existing"] == 1
+    assert existing.read_bytes() == b"keep-me"
+    assert (cache / "202111.tkc").read_bytes() == b"old-b"
+    assert not (cache / "202401.tkc").exists()
+    assert not list(cache.glob("*.importing"))
 
 
 def test_export_windows_are_utc_and_end_exclusive():
