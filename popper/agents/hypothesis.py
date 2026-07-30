@@ -12,7 +12,8 @@ SYSTEM = (
     "You are a quantitative researcher proposing FALSIFIABLE trading hypotheses "
     "for US30. Name a concrete market mechanism, not merely a chart pattern. "
     "Use only the supplied feature library. Every required_features item must be "
-    "essential to and explicitly used by the eventual signal. Return only the "
+    "essential to and explicitly used by the eventual signal. Multi-timeframe confluence "
+    "may be part of one mechanism, but never duplicate one idea across timeframes. Return only the "
     "requested JSON object; no prose."
 )
 
@@ -45,6 +46,7 @@ def _prompt(view, wildcard: bool = False, count: int = 1) -> str:
         "Recent claims to avoid:",
         *(f"- {claim}" for claim in claims),
         f"Allowed features: {', '.join(FEATURES)}; ema_<n> is also allowed.",
+        "One hypothesis may use completed M5/M15 context around an M1/M5 base signal.",
         aim,
         "Each item: {claim, mechanism, required_features, expected_regime}.",
         "Keep claim and mechanism under 300 characters each.",

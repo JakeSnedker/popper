@@ -33,10 +33,12 @@ from math import sqrt
 from statistics import mean, pstdev
 
 import numpy as np
+import pandas as pd
 
 from popper.artifacts import Scorecard, Verdict, VerdictType
 from popper.artifacts.strategy_spec import StopRule, TargetRule
-from popper.data import load_bars
+from popper.data import load_bars, load_higher_timeframe_bars
+from popper.data.timeframes import timeframe_minutes
 from popper.dsl import compile_to_backtest
 from popper.dsl.expr import eval_signal
 from popper.experiments import run
@@ -134,6 +136,17 @@ def calculate_windows(start: str, end: str, cfg: GauntletConfig) -> list[dict]:
     return windows
 
 
+def context_trial_count(spec) -> int:
+    """One base search plus each declared higher-timeframe feature binding."""
+    return 1 + sum(
+        len(features) for features in spec.alpha.higher_timeframe_features.values()
+    )
+
+
+def multiple_testing_trial_count(spec, parameter_trials: int, exit_trials: int) -> int:
+    return max(parameter_trials * exit_trials * context_trial_count(spec), 1)
+
+
 def _grid(spec, cap: int) -> list[dict]:
     """Cartesian product of param_space, capped (evenly sampled) to `cap`."""
     if not spec.param_space:
@@ -182,7 +195,10 @@ def _horizon_families(horizons: dict, mode: str = "balanced") -> dict:
     return families
 
 
-def _signal_edge(spec, bars, mode: str = "balanced") -> dict:
+def _signal_edge(
+    spec, bars, mode: str = "balanced",
+    higher_timeframe_bars: dict | None = None,
+) -> dict:
     """Layer-1 signal-edge gate (spec §3): exit-neutral. Sign-adjusted forward
     close-to-close return over L1_HORIZONS on bars where the compiled signal
     fires. Pass = one coherent horizon family is favourable (positive mean on
@@ -191,7 +207,7 @@ def _signal_edge(spec, bars, mode: str = "balanced") -> dict:
     3 bars."""
     bt = compile_to_backtest(spec)
     params = bt.default_params()
-    env = bt._env(bars)
+    env = bt._env(bars, higher_timeframe_bars)
     long_sig = eval_signal(spec.alpha.signal, env, params).to_numpy()
     short_sig = (eval_signal(spec.alpha.signal_short, env, params).to_numpy()
                  if spec.alpha.signal_short else np.zeros(len(bars), dtype=bool))
@@ -308,7 +324,8 @@ def _select_exit_config(spec, run_fn, period):
 
 def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
           cfg: GauntletConfig | None = None, mem=None, bars=None,
-          costs: dict | None = None) -> tuple[Scorecard, Verdict]:
+          costs: dict | None = None,
+          higher_timeframe_bars: dict | None = None) -> tuple[Scorecard, Verdict]:
     """Run the gauntlet. Returns (Scorecard, Verdict). If `mem`, persists the
     full-period anchor experiment (its id anchors experiment_id on both).
     Scorecard/Verdict persistence is the caller's job — the research loop
@@ -316,6 +333,7 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
     `bars` feeds the Layer-1/Layer-2 stages; auto-loaded for the real runner,
     injectable for offline tests, and both stages skip cleanly without it."""
     cfg = cfg or GauntletConfig()
+    real_runner = run_fn is run
     # costs (None = frictionless) bound onto every run_fn call — re-run the whole
     # gauntlet with friction on to stress-test edges that passed clean.
     if costs is not None:
@@ -323,11 +341,21 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
     t = cfg.thresholds
     reasons: list[str] = []
     diag: dict = {}  # per-gate glass box — every computed value + its threshold
+    context_trials = context_trial_count(spec)
 
     # bars power Layer 1/2 and period discovery; only the real runner can load them
-    if bars is None and (period is None or run_fn is run):
+    if bars is None and (period is None or real_runner):
         s_, e_ = period or (None, None)
         bars = load_bars(spec.context.universe[0], _mt5_tf(spec.context.timeframe), s_, e_)
+    if (
+        higher_timeframe_bars is None
+        and spec.alpha.higher_timeframe_features
+        and real_runner
+    ):
+        _, e_ = period or (None, None)
+        higher_timeframe_bars = load_higher_timeframe_bars(
+            spec.context.universe[0], spec.alpha.higher_timeframe_features, end=e_,
+        )
     if period is None:
         period = (bars["time"].iloc[0].date().isoformat(), bars["time"].iloc[-1].date().isoformat())
     start, end = period
@@ -363,7 +391,10 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
     # --- LAYER 1 (v0.3 §3): signal-edge gate — exit-neutral, kills junk before
     # anything expensive. Skipped (recorded) when no bars are available. ---
     if bars is not None:
-        se = _signal_edge(spec, bars, mode=cfg.signal_edge_mode)
+        se = _signal_edge(
+            spec, bars, mode=cfg.signal_edge_mode,
+            higher_timeframe_bars=higher_timeframe_bars,
+        )
         diag["gate_signal_edge"] = se
         if not se["passed"]:
             reasons.append(f"no signal edge: {se['reason']}")
@@ -382,7 +413,7 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
     _store_anchor()
 
     # --- GATE 0: leakage / look-ahead ---
-    leaked = _detect_lookahead(spec, start, end, run_fn)
+    leaked = _detect_lookahead(spec, start, end, real_runner)
     diag["gate0_leakage"] = {"passed": not leaked}
     if leaked:
         reasons.append("leakage: look-ahead detected (future bars change past trades)")
@@ -471,7 +502,8 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
     # per-combo Sharpe dispersion feeds the DSR benchmark (breadth of the search)
     combo_sharpes = [_sharpe_of(run_fn(spec, period=period, params=c)) for c in grid]
     sr_std = pstdev(combo_sharpes) if len(combo_sharpes) > 1 else 0.0
-    n_trials = max(len(grid) * n_menu, 1)  # v0.3 §6: menu breadth raises the bar
+    # Parameter, exit-menu and context searches all raise the multiple-testing bar.
+    n_trials = multiple_testing_trial_count(spec, len(grid), n_menu)
     dsr = deflated_sharpe(fwd_trades, n_trials=n_trials, sr_std=sr_std)
 
     n_before = len(reasons)
@@ -483,6 +515,7 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
         "pbo": round(pbo, 4), "max_pbo": t.max_pbo,
         "dsr": round(dsr, 4), "min_deflated_sharpe": t.min_deflated_sharpe,
         "sr_std": round(sr_std, 4), "n_trials": n_trials,
+        "context_trials": context_trials,
         "passed": len(reasons) == n_before,
     }
 
@@ -532,7 +565,7 @@ def _perf_matrix(spec, grid, start, end, cfg, run_fn) -> list[list[float]]:
     return matrix
 
 
-def _detect_lookahead(spec, start, end, run_fn) -> bool:
+def _detect_lookahead(spec, start, end, real_runner: bool) -> bool:
     """Leakage gate: a causal strategy's trades in the first half of the data
     must NOT change when the second half is unknown. We compare trades produced
     on the full period against those on the first-half period; any trade that
@@ -541,15 +574,38 @@ def _detect_lookahead(spec, start, end, run_fn) -> bool:
 
     Uses compile_to_backtest directly on real bars (not run_fn) so it always
     tests the actual engine; skipped when run_fn is injected for unit tests."""
-    if run_fn is not run:  # injected fake runner has no real bars to truncate
+    if not real_runner:  # injected fake runner has no real bars to truncate
         return False
-    bars = load_bars(spec.context.universe[0], _mt5_tf(spec.context.timeframe), start, end)
+    symbol = spec.context.universe[0]
+    bars = load_bars(symbol, _mt5_tf(spec.context.timeframe), start, end)
     if len(bars) < 200:
         return False
+    higher = load_higher_timeframe_bars(
+        symbol, spec.alpha.higher_timeframe_features, end=end,
+    )
     half = len(bars) // 2
+    truncated_bars = bars.iloc[:half].reset_index(drop=True)
+    cutoff = (
+        pd.Timestamp(truncated_bars["time"].iloc[-1])
+        + pd.Timedelta(minutes=timeframe_minutes(spec.context.timeframe))
+    )
+    truncated_higher = {
+        timeframe: frame[
+            pd.to_datetime(frame["time"], utc=True)
+            + pd.Timedelta(minutes=timeframe_minutes(timeframe)) <= cutoff
+        ].reset_index(drop=True)
+        for timeframe, frame in higher.items()
+    }
     bt = compile_to_backtest(spec)
-    full = bt(bars)["trades"]
-    trunc = bt(bars.iloc[:half].reset_index(drop=True))["trades"]
-    early_full = [(t["entry_i"], t["exit_i"], t["pnl_r"]) for t in full if t["exit_i"] < half]
-    early_trunc = [(t["entry_i"], t["exit_i"], t["pnl_r"]) for t in trunc if t["exit_i"] < half]
+    full = bt(bars, higher_timeframe_bars=higher)["trades"]
+    trunc = bt(truncated_bars, higher_timeframe_bars=truncated_higher)["trades"]
+    # The truncated engine force-closes an open trade at its final bar; that
+    # synthetic boundary close is not evidence of look-ahead.
+    early_full = [
+        (t["entry_i"], t["exit_i"], t["pnl_r"]) for t in full if t["exit_i"] < half - 1
+    ]
+    early_trunc = [
+        (t["entry_i"], t["exit_i"], t["pnl_r"])
+        for t in trunc if t["exit_i"] < half - 1
+    ]
     return early_full != early_trunc

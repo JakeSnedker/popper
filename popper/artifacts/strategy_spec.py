@@ -26,7 +26,8 @@ def _now() -> datetime:
 class Alpha(BaseModel):
     """The signal. `signal` fires long (+1); optional `signal_short` fires -1."""
 
-    features: list[str] = Field(default_factory=list)  # feature-library names only
+    features: list[str] = Field(default_factory=list)  # base-timeframe features
+    higher_timeframe_features: dict[str, list[str]] = Field(default_factory=dict)
     signal: str  # boolean expression, e.g. "close > ema_50 AND atr_14 > p[atr_min]"
     signal_short: str | None = None
 

@@ -17,18 +17,61 @@ from popper.artifacts.strategy_spec import StrategySpec
 from popper.dsl.expr import check_signal
 from popper.dsl.features import resolve_feature
 from popper.dsl.features.levels import LEVEL_FEATURES, LOSS_SIDE, PROFIT_SIDE
+from popper.data.timeframes import higher_feature_alias, normalize_timeframe, timeframe_minutes
 
 _PARAM_REF = re.compile(r"^p\[(\w+)\]$")
 
 _EITHER = LEVEL_FEATURES - LOSS_SIDE - PROFIT_SIDE  # bb_line — usable both ways
 _LOCAL_UNIVERSES = {"US30"}
-_LOCAL_TIMEFRAMES = {"1m", "5m", "M1", "M5"}
+_LOCAL_TIMEFRAMES = {"M1", "M5", "M15"}
 
 
 class DSLValidationError(ValueError):
     def __init__(self, errors: list[str]):
         self.errors = errors
         super().__init__("invalid spec:\n  - " + "\n  - ".join(errors))
+
+
+def signal_feature_names(spec: StrategySpec) -> list[str]:
+    names = list(spec.alpha.features)
+    for timeframe, features in spec.alpha.higher_timeframe_features.items():
+        try:
+            names.extend(higher_feature_alias(timeframe, feature) for feature in features)
+        except ValueError:
+            continue  # _higher_timeframe_errors reports the invalid key cleanly
+    return names
+
+
+def _higher_timeframe_errors(spec: StrategySpec) -> list[str]:
+    errors = []
+    if not spec.alpha.higher_timeframe_features:
+        return errors
+    try:
+        base_minutes = timeframe_minutes(spec.context.timeframe)
+    except ValueError as exc:
+        return [f"context.timeframe: {exc}"]
+    normalized = set()
+    for timeframe, features in spec.alpha.higher_timeframe_features.items():
+        try:
+            canonical = normalize_timeframe(timeframe)
+            minutes = timeframe_minutes(timeframe)
+        except ValueError as exc:
+            errors.append(f"alpha.higher_timeframe_features[{timeframe!r}]: {exc}")
+            continue
+        if canonical in normalized:
+            errors.append(f"duplicate higher timeframe after normalization: {canonical}")
+        normalized.add(canonical)
+        if minutes <= base_minutes or minutes % base_minutes:
+            errors.append(
+                f"higher timeframe {canonical} must be a strict integer multiple of "
+                f"base timeframe {normalize_timeframe(spec.context.timeframe)}"
+            )
+        if not features:
+            errors.append(f"alpha.higher_timeframe_features[{timeframe!r}] must not be empty")
+        for feature in features:
+            if resolve_feature(feature) is None:
+                errors.append(f"unknown higher-timeframe feature: {feature!r}")
+    return errors
 
 
 def _wrapper_param_refs(spec: StrategySpec, errors: list[str]) -> set[str]:
@@ -89,10 +132,11 @@ def validate_spec(spec: StrategySpec | dict) -> StrategySpec:
 
     errors: list[str] = []
 
-    # features exist in the library
+    # features exist in the library and higher contexts are strictly coarser
     for f in spec.alpha.features:
         if resolve_feature(f) is None:
             errors.append(f"unknown feature: {f!r}")
+    errors += _higher_timeframe_errors(spec)
 
     # signals parse, use only declared names, and stay inside the bounded grammar
     used_params: set[str] = set()
@@ -102,7 +146,7 @@ def validate_spec(spec: StrategySpec | dict) -> StrategySpec:
         if not text.strip():
             errors.append(f"alpha.{label} is empty")
             continue
-        params, errs = check_signal(text, spec.alpha.features)
+        params, errs = check_signal(text, signal_feature_names(spec))
         used_params |= params
         errors += [f"alpha.{label}: {e}" for e in errs]
 
@@ -136,11 +180,25 @@ def validate_local_data_context(spec: StrategySpec) -> StrategySpec:
             f"context.universe contains unsupported symbols {unsupported_universe}; "
             f"available local data: {sorted(_LOCAL_UNIVERSES)}"
         )
-    if spec.context.timeframe not in _LOCAL_TIMEFRAMES:
+    try:
+        base_timeframe = normalize_timeframe(spec.context.timeframe)
+    except ValueError:
+        base_timeframe = spec.context.timeframe
+    if base_timeframe not in _LOCAL_TIMEFRAMES:
         errors.append(
             f"context.timeframe {spec.context.timeframe!r} has no local data; "
-            "use '5m' for the current US30 research loop"
+            f"available canonical timeframes: {sorted(_LOCAL_TIMEFRAMES)}"
         )
+    for timeframe in spec.alpha.higher_timeframe_features:
+        try:
+            canonical = normalize_timeframe(timeframe)
+        except ValueError:
+            continue
+        if canonical not in _LOCAL_TIMEFRAMES:
+            errors.append(
+                f"higher timeframe {timeframe!r} has no local data; "
+                f"available canonical timeframes: {sorted(_LOCAL_TIMEFRAMES)}"
+            )
     if errors:
         raise DSLValidationError(errors)
     return spec

@@ -229,6 +229,8 @@ def test_data_sources_lists_only_present_parquets():
     for s in body["sources"]:
         assert set(s) == {"symbol", "timeframe", "rows"}
         assert s["symbol"] and s["timeframe"]  # parsed from <SYM>_<TF>.parquet
-    from popper.data.bars import DATA_DIR
+    from popper.data.bars import CANONICAL_DATASET_DIR, DATA_DIR
     if (DATA_DIR / "us30" / "US30_M5.parquet").exists():  # ships in-repo
         assert any(s["symbol"] == "US30" and s["timeframe"] == "M5" for s in body["sources"])
+    if (CANONICAL_DATASET_DIR / "dataset-manifest.json").exists():
+        assert any(s["symbol"] == "US30" and s["timeframe"] == "M15" for s in body["sources"])

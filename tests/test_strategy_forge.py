@@ -79,3 +79,13 @@ def test_unsupported_feature_fails_closed():
                  param_space={"sl_atr": [1.5], "rr": [2.0]})
     with pytest.raises(ForgeUnsupported, match="does not implement"):
         forge_spec(spec)
+
+
+def test_multitimeframe_forge_fails_closed_until_targets_are_causal():
+    spec = _spec(alpha={
+        "features": ["atr_14"],
+        "higher_timeframe_features": {"15m": ["ema_50"]},
+        "signal": "atr_14 > p[atr_min] AND htf_m15_ema_50 > close",
+    })
+    with pytest.raises(ForgeUnsupported, match="higher-timeframe"):
+        forge_spec(spec)

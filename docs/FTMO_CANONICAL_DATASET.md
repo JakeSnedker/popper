@@ -109,3 +109,5 @@ Verify a received copy without MT5:
 ```
 
 The verifier checks all 1,936 Parquet files for expected path, byte size, row count and SHA-256, recomputes the aggregate dataset hash, and verifies each evidence-report hash. Workers receive this directory separately from Git and mount or mark it read-only after verification.
+
+The research runner now loads these canonical M1/M5/M15 partitions directly and applies the completed-bar alignment defined in `docs/MULTI_TIMEFRAME_DSL.md`.

@@ -118,10 +118,15 @@ def test_rejects_unused_param_space_key():
     assert "not referenced" in _errors(param_space={"atr_min": [0.5], "ghost": [1, 2]})
 
 
-def test_rejects_unsupported_timeframe_before_runner_crash():
+def test_accepts_canonical_m15_and_rejects_unsupported_timeframe_before_runner_crash():
+    validate_local_data_context(
+        validate_spec(_spec(context={"universe": ["US30"], "timeframe": "15m"}))
+    )
     with pytest.raises(DSLValidationError) as e:
-        validate_local_data_context(validate_spec(_spec(context={"universe": ["US30"], "timeframe": "15m"})))
-    assert "context.timeframe '15m' has no local data" in str(e.value)
+        validate_local_data_context(
+            validate_spec(_spec(context={"universe": ["US30"], "timeframe": "1h"}))
+        )
+    assert "context.timeframe '1h' has no local data" in str(e.value)
 
 
 def test_rejects_unsupported_symbol_before_runner_crash():

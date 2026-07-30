@@ -8,6 +8,7 @@ import ast
 import json
 
 from popper.agents.llm import MODELS, strip_fence
+from popper.data.timeframes import higher_feature_alias
 from popper.dsl import DSLValidationError
 from popper.dsl.expr import BAR_COLS, parse_signal
 from popper.dsl.features import resolve_feature
@@ -43,13 +44,19 @@ def fidelity_errors(hypothesis, spec, mode: str = "strict") -> list[str]:
     unsupported = sorted(f for f in required if resolve_feature(f) is None)
     errors = hypothesis_feature_errors(hypothesis)
     supported = required - set(unsupported)
-    declared = set(spec.alpha.features)
-    missing = sorted(supported - declared)
+    bindings = {feature: {feature} for feature in spec.alpha.features}
+    for timeframe, features in spec.alpha.higher_timeframe_features.items():
+        for feature in features:
+            bindings.setdefault(feature, set()).add(higher_feature_alias(timeframe, feature))
+    missing = sorted(supported - set(bindings))
     if missing:
-        errors.append(f"hypothesis required_features missing from alpha.features: {missing}")
+        errors.append(f"hypothesis required_features missing from alpha feature bindings: {missing}")
     if mode == "strict":
         used = _signal_names(spec)
-        unused = sorted(supported - used)
+        unused = sorted(
+            feature for feature in supported
+            if feature not in bindings or not (bindings[feature] & used)
+        )
         if unused:
             errors.append(f"hypothesis required_features not used by either signal: {unused}")
     return errors

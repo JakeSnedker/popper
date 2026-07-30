@@ -87,9 +87,8 @@ def rsi_fast(bars: pd.DataFrame) -> pd.Series:
 
 
 def htf_trend(bars: pd.DataFrame) -> pd.Series:
-    # DECISION: higher-timeframe trend proxied on the native series as
-    # sign(EMA48 - EMA240) (~4h vs ~20h on M5). Avoids resample edge cases;
-    # upgrade to true HTF resampling when an alpha needs exact H1 bars.
+    # Backward-compatible single-series proxy. New specs should bind a concrete
+    # feature through alpha.higher_timeframe_features for true M5/M15 context.
     return np.sign(ema(bars, 48) - ema(bars, 240))
 
 
@@ -148,7 +147,7 @@ def candle_size(bars: pd.DataFrame) -> pd.Series:
 # (bos_<n>, mss_<n>, equilibrium_<n>, ob_bull_mid_<n>, ob_bear_mid_<n>, cisd_<n>)
 # mirroring ema_<n> — this is also how a "supply/demand zone" is expressed:
 # order_block at a larger structural lookback (a PARAMETERIZATION, not a new
-# feature). True HTF resampling stays deferred, consistent with htf_trend.
+# feature). True M5/M15 context is declared separately on the alpha.
 
 SWING_LOOKBACK = 2   # fractal half-width (bars each side); ICT default
 CISD_RUN = 1         # min consecutive same-direction closes before a delivery flip counts

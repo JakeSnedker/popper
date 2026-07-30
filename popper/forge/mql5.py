@@ -27,6 +27,8 @@ def _wrapper_value(value) -> str:
 
 
 def _validate(spec: StrategySpec) -> None:
+    if spec.alpha.higher_timeframe_features:
+        raise Mql5Unsupported("MQL5 target does not yet implement causal higher-timeframe features")
     unsupported = sorted(feature for feature in spec.alpha.features
                          if feature not in _SUPPORTED and not _EMA.match(feature))
     if unsupported:

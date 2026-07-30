@@ -11,7 +11,8 @@ alpha:                      # the edge/signal ONLY — no execution, no sizing
   id: A-0007
   hypothesis_id: H-0012
   features: [atr_14, ema_50, session_ny, opening_range]
-  signal: "close > ema_50 AND session == NY_open AND atr_14 > p[atr_min]"
+  higher_timeframe_features: {15m: [ema_50]}
+  signal: "close > ema_50 AND htf_m15_ema_50 > close AND atr_14 > p[atr_min]"
   # an alpha emits a directional signal (+1/-1/0). It does NOT decide TP/SL/size.
 
 wrapper:                    # execution — turns an alpha into a strategy
@@ -45,11 +46,20 @@ This mirrors the JJC insight *"trade management cannot create edge, only preserv
   (`dsl_version`). Rationale: safe (no arbitrary code in the loop), machine-generable by the Synthesis
   agent, diff-able/versionable in alpha memory.
 - **Validator rejects:** unknown features, unsafe expressions, look-ahead references (a feature that reads
-  future bars), missing required blocks, param_space that references undefined params.
+  future bars), missing required blocks, param_space that references undefined params, and higher contexts
+  that are not strict integer multiples of the base timeframe.
 - **Feature library** (`popper/dsl/features/`) — the only names an alpha may reference. Seed set from the
   JJC feature vocabulary: `atr_14`, `ema_{n}`, `session_{ny,london,asia}`, `opening_range`, `rsi_fast`,
   `htf_trend`, `bb_line`, `psar`, `liquidity_sweep`, `candle_size`. Each feature is a pure function
   `bars -> series`, point-in-time correct (no future leak — enforced, see `03`).
+
+## Multi-timeframe context
+
+`context.timeframe` is the one base execution timeframe. An alpha may bind feature-library primitives to
+M5/M15 through `higher_timeframe_features`; signals reference aliases such as `htf_m15_ema_50`. A higher
+bar is aligned only after its close (`bar open + timeframe duration <= base bar close`). This keeps
+confluence inside one hypothesis and prevents an in-progress higher bar from leaking into a base signal.
+See `docs/MULTI_TIMEFRAME_DSL.md` for the executable contract and trial accounting.
 
 ## Three compile targets — all Python; **Popper never generates MQL5**
 - `compile_to_backtest(spec)` → a **pure-Python** vectorised/event-driven backtester over the US30 Parquet

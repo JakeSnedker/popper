@@ -61,8 +61,8 @@ def data_sources() -> dict:
     timeframe) pairs a run can legitimately use. The dashboard offers exactly
     these so nobody points a run at data that isn't here (which otherwise fails
     deep in the runner). Shows what each Popper instance has access to."""
-    from popper.data.bars import DATA_DIR
-    sources = []
+    from popper.data.bars import CANONICAL_DATASET_DIR, DATA_DIR
+    indexed = {}
     if DATA_DIR.exists():
         for p in sorted(DATA_DIR.glob("*/*.parquet")):
             stem = p.stem  # e.g. "US30_M5"
@@ -75,8 +75,23 @@ def data_sources() -> dict:
                 rows = pq.ParquetFile(p).metadata.num_rows
             except Exception:  # noqa: BLE001
                 pass
-            sources.append({"symbol": symbol, "timeframe": timeframe, "rows": rows})
-    return {"data_dir": str(DATA_DIR), "sources": sources}
+            indexed[(symbol, timeframe)] = {
+                "symbol": symbol, "timeframe": timeframe, "rows": rows,
+            }
+    manifest_path = CANONICAL_DATASET_DIR / "dataset-manifest.json"
+    if manifest_path.is_file():
+        try:
+            import json
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for timeframe in ("M1", "M5", "M15"):
+                indexed[("US30", timeframe)] = {
+                    "symbol": "US30",
+                    "timeframe": timeframe,
+                    "rows": manifest["bars"][timeframe]["total_rows"],
+                }
+        except Exception:  # noqa: BLE001
+            pass
+    return {"data_dir": str(DATA_DIR), "sources": [indexed[key] for key in sorted(indexed)]}
 
 
 @app.get("/api/stats")

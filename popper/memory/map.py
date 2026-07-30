@@ -7,6 +7,8 @@ combinations. A new category is warranted when nearest similarity < NEW_CATEGORY
 
 from statistics import fmean, pstdev
 
+from popper.data.timeframes import normalize_timeframe, timeframe_minutes
+
 # tunable thresholds (spec/04)
 NEW_CATEGORY = 0.70   # nearest cosine below this -> spawn a new category
 STALE = 0.90          # nearest cosine at/above this -> re-exploration (stale)
@@ -32,7 +34,13 @@ def edge_type(hypothesis) -> str:
 
 
 def context_tag(spec) -> str:
-    return f"{spec.context.universe[0]}:{spec.context.timeframe}"
+    base = spec.context.timeframe
+    canonical = (
+        normalize_timeframe(timeframe)
+        for timeframe in spec.alpha.higher_timeframe_features
+    )
+    higher = sorted(canonical, key=timeframe_minutes)
+    return f"{spec.context.universe[0]}:{'+'.join([base, *higher])}"
 
 
 def categorize(hypothesis, spec=None) -> dict:

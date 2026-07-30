@@ -46,6 +46,7 @@ def test_hypothesis_agent_emits_hypothesis():
     assert llm.calls[0]["model"] == "hypothesis"  # logical role; router chooses provider/model
     # the prompt is built from the map only (zero-coverage labels), never results
     assert "Zero-coverage" in llm.calls[0]["prompt"]
+    assert "completed M5/M15 context" in llm.calls[0]["prompt"]
 
 
 def test_hypothesis_agent_repairs_malformed_json():
@@ -109,6 +110,28 @@ def test_synthesis_repairs_until_valid():
     assert len(llm.calls) == 2             # repaired exactly once
     assert "INVALID" in llm.calls[1]["prompt"]  # validator error fed back
     assert [call["model"] for call in llm.calls] == ["synthesis", "synthesis_strong"]
+
+
+def test_synthesis_accepts_required_feature_bound_to_completed_higher_context():
+    mem = _mem()
+    h = mem.add_hypothesis(Hypothesis(
+        claim="M15 trend confirms M5 continuation",
+        mechanism="cross-scale flow persistence",
+        required_features=["ema_50"],
+    ))
+    llm = StubLLM(
+        "name: mtf\n"
+        "alpha:\n"
+        "  features: []\n"
+        "  higher_timeframe_features: {15m: [ema_50]}\n"
+        "  signal: 'htf_m15_ema_50 > 0'\n"
+        "context: {universe: [US30], timeframe: 5m}\n"
+    )
+
+    spec = synthesize(h, llm)
+
+    assert spec.alpha.higher_timeframe_features == {"15m": ["ema_50"]}
+    assert "completed higher bars" in llm.calls[0]["system"]
 
 
 def test_synthesis_raises_after_cap():

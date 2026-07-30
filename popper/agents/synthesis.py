@@ -12,15 +12,19 @@ from popper.dsl.validator import validate_local_data_context
 
 SYSTEM = (
     "Translate one trading hypothesis into Popper Strategy DSL YAML. Schema: name; "
-    "alpha{features,signal,signal_short?}; wrapper{stop,target,trail,break_even,sizing}; "
-    "context{universe:[US30],timeframe:5m}; param_space. Use only the supplied feature "
+    "alpha{features,higher_timeframe_features?,signal,signal_short?}; "
+    "wrapper{stop,target,trail,break_even,sizing}; "
+    "context{universe:[US30],timeframe:1m|5m}; param_space. Use only the supplied feature "
     "library and bounded AND/OR/NOT arithmetic/comparison expressions. Every hypothesis "
     "required_feature must be declared and used by signal or signal_short. Every p[name] "
     "must have a non-empty param_space grid and every grid must be referenced. Grid keys "
     "are bare names, NEVER p[name]. Example: signal: 'atr_14 > p[atr_min]' with "
     "param_space: {atr_min: [5, 10, 15]}. Wrapper enums are stop atr|level, target "
     "ratio|level, trail none|atr, break_even none|after_r. Never invent other types. "
-    "Use US30 5m only. Return YAML only."
+    "Higher features use aliases like htf_m15_ema_50 in signals. A higher timeframe "
+    "must be strictly coarser than the base; only completed higher bars are exposed. "
+    "Use one base timeframe and optional M5/M15 confluence inside the same hypothesis; "
+    "never clone one hypothesis across timeframes. Return YAML only."
 )
 
 
@@ -32,7 +36,10 @@ def _prompt(hypothesis) -> str:
         f"Feature library: {', '.join(FEATURES)}; ema_<n> is allowed.",
         "Valid shape example:",
         "name: probe",
-        "alpha: {features: [atr_14], signal: 'atr_14 > p[atr_min]'}",
+        "alpha:",
+        "  features: [atr_14]",
+        "  higher_timeframe_features: {15m: [ema_50]}",
+        "  signal: 'atr_14 > p[atr_min] AND htf_m15_ema_50 > close'",
         "wrapper:",
         "  stop: {type: atr, mult: 'p[sl_atr]'}",
         "  target: {type: ratio, ratio: 'p[rr]'}",

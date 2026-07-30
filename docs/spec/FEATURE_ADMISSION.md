@@ -59,8 +59,8 @@ Definitions (authoritative = the Python in `features/__init__.py`):
   `ob_disp_mult`·atr_14); bearish mirror. NaN when none active; cleared on full
   mitigation (price fully sweeps back through the zone).
   - **Supply/Demand zone = this feature at a larger structural lookback**
-    (`ob_bull_mid_<bigger n>`) — a PARAMETERIZATION, not a new feature. True HTF
-    resampling stays deferred, consistent with `htf_trend`'s DECISION comment.
+    (`ob_bull_mid_<bigger n>`) — a PARAMETERIZATION, not a new feature. Exact
+    M5/M15 context uses `alpha.higher_timeframe_features`, not a new primitive.
 
 ### Rejected — folded, not admitted
 
@@ -76,4 +76,6 @@ The stateful structural features (bos/mss/cisd/order_block/equilibrium) are hard
 port 1:1. Popper's Python is the semantic truth (falsification runs on it). Forge's
 Pine (via `ta.pivothigh/pivotlow` + `var` state) and MQL5 (bounded `InpSmcScan`
 rescan) are best-effort, with a parity caveat stamped into every generated file
-header — same discipline as `psar`/`opening_range`. `fvg` ports 1:1.
+header — same discipline as `psar`/`opening_range`. `fvg` ports 1:1. Specs with
+`higher_timeframe_features` currently fail closed in Forge until both targets
+implement the same completed-bar alignment as the Python compiler.

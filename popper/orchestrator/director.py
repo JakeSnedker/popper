@@ -175,7 +175,11 @@ def _explore(mem, llm, run_fn, period, cfg, wildcard: bool,
         )
         _event(mem, run_id, iteration, engine, "synthesis", "compile", "ok",
                f"compiled DSL spec {spec.name}",
-               payload={"features": spec.alpha.features, "llm_calls": _llm_trace(llm, mark)})
+               payload={
+                   "features": spec.alpha.features,
+                   "higher_timeframe_features": spec.alpha.higher_timeframe_features,
+                   "llm_calls": _llm_trace(llm, mark),
+               })
     except LLMProviderError as e:
         reason = f"synthesis provider unavailable: {e}"
         _event(mem, run_id, iteration, engine, "synthesis", "compile", "provider_error",

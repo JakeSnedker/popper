@@ -24,6 +24,7 @@ there is no scoring path that bypasses falsification.
 from popper.artifacts.strategy_spec import BreakEvenRule, TrailRule
 from popper.dsl import DSLValidationError, validate_spec
 from popper.dsl.expr import check_signal
+from popper.dsl.validator import signal_feature_names
 from popper.experiments.runner import run
 from popper.falsify import GauntletConfig
 from popper.falsify.gauntlet import judge
@@ -121,9 +122,10 @@ def _wrapper_neighbors(spec) -> list[tuple[str, object]]:
 def _alpha_refs(spec) -> set[str]:
     """param_space keys the ENTRY signal references as p[...] — the operating
     point of the edge. Reuses the DSL's own extractor (check_signal)."""
-    refs, _ = check_signal(spec.alpha.signal, spec.alpha.features)
+    declared = signal_feature_names(spec)
+    refs, _ = check_signal(spec.alpha.signal, declared)
     if spec.alpha.signal_short:
-        r2, _ = check_signal(spec.alpha.signal_short, spec.alpha.features)
+        r2, _ = check_signal(spec.alpha.signal_short, declared)
         refs |= r2
     return refs
 

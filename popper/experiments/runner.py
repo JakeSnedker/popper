@@ -21,7 +21,7 @@ import math
 from popper.artifacts import ExperimentResult
 from popper.artifacts.strategy_spec import StrategySpec
 from popper.config import settings
-from popper.data import load_bars
+from popper.data import load_bars, load_higher_timeframe_bars
 from popper.dsl import compile_to_backtest
 
 
@@ -139,16 +139,22 @@ def run(
     tf = spec.context.timeframe
     symbol = spec.context.universe[0]
     bars = load_bars(symbol, _tf_to_mt5(tf), start, end)
+    higher_bars = load_higher_timeframe_bars(
+        symbol, spec.alpha.higher_timeframe_features, end=end,
+    )
 
     bt = compile_to_backtest(spec)
-    result = bt(bars, params, costs)
+    result = bt(bars, params, costs, higher_timeframe_bars=higher_bars)
 
     period_start = str(bars["time"].iloc[0].date()) if len(bars) else (start or "")
     period_end = str(bars["time"].iloc[-1].date()) if len(bars) else (end or "")
 
     exp = ExperimentResult(
         spec_id=spec.id or "",
-        dataset=f"{symbol} {tf} {period_start}..{period_end}",
+        dataset=(
+            f"{symbol} {tf}"
+            f"{''.join('+' + key for key in higher_bars)} {period_start}..{period_end}"
+        ),
         period_start=period_start,
         period_end=period_end,
         trades_n=result["n_trades"],

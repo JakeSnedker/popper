@@ -29,7 +29,7 @@ Verify a local or received copy:
   --dataset-dir data\ftmo-us30-v1 --verify-only
 ```
 
-The legacy `data/us30/US30_M1.parquet` and `US30_M5.parquet` layout may still be present for the existing single-timeframe runner. The canonical partitioned dataset replaces it as the versioned source of truth; runner integration follows in the multi-timeframe step.
+The runner reads canonical M1/M5/M15 monthly partitions and caches each timeframe once. The legacy `data/us30/US30_M1.parquet` and `US30_M5.parquet` layout remains a fallback when canonical partitions are unavailable.
 
 See `docs/FTMO_CANONICAL_DATASET.md` for source provenance, derivation rules, gap evidence and the documented tick/native-M1 snapshot differences.
 

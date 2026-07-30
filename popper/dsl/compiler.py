@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 from popper.artifacts.strategy_spec import StrategySpec
+from popper.data.timeframes import higher_feature_alias, normalize_timeframe, timeframe_minutes
 from popper.dsl.expr import BAR_COLS, eval_signal
 from popper.dsl.features import atr_14, compute_feature
 from popper.dsl.features.levels import compute_level
@@ -45,6 +46,45 @@ def _resolve_name(value: str, params: dict) -> str:
     return str(params[m.group(1)]) if m else value
 
 
+def align_completed_feature(
+    base_bars: pd.DataFrame,
+    higher_bars: pd.DataFrame,
+    values: pd.Series,
+    base_timeframe: str,
+    higher_timeframe: str,
+) -> pd.Series:
+    """Align a higher feature only when its source bar has completed."""
+    if "time" not in base_bars or "time" not in higher_bars:
+        raise ValueError("multi-timeframe alignment requires UTC time columns")
+    if len(values) != len(higher_bars):
+        raise ValueError("higher feature length does not match its source bars")
+    base_close = (
+        pd.to_datetime(base_bars["time"], utc=True)
+        + pd.Timedelta(minutes=timeframe_minutes(base_timeframe))
+    )
+    target = pd.DataFrame({"available": base_close, "position": np.arange(len(base_bars))})
+    source = pd.DataFrame({
+        "available": (
+            pd.to_datetime(higher_bars["time"], utc=True)
+            + pd.Timedelta(minutes=timeframe_minutes(higher_timeframe))
+        ),
+        "value": values.to_numpy(),
+    })
+    if source.empty:
+        return pd.Series(np.nan, index=base_bars.index, name=values.name, dtype="float64")
+    source = source.sort_values("available", kind="stable").drop_duplicates(
+        "available", keep="last",
+    )
+    aligned = pd.merge_asof(
+        target.sort_values("available", kind="stable"),
+        source,
+        on="available",
+        direction="backward",
+        allow_exact_matches=True,
+    ).sort_values("position")
+    return pd.Series(aligned["value"].to_numpy(), index=base_bars.index, name=values.name)
+
+
 class CompiledStrategy:
     """Callable: (bars, params=None) -> result dict. Validated at compile time."""
 
@@ -56,20 +96,45 @@ class CompiledStrategy:
         # not an edge). The falsifier probes the full grid in Phase 3.
         return {k: v[len(v) // 2] for k, v in self.spec.param_space.items()}
 
-    def _env(self, bars: pd.DataFrame) -> dict[str, pd.Series]:
+    def _env(
+        self,
+        bars: pd.DataFrame,
+        higher_timeframe_bars: dict[str, pd.DataFrame] | None = None,
+    ) -> dict[str, pd.Series]:
         env = {c: bars[c] for c in BAR_COLS if c in bars.columns}
         if "volume" not in env and "tick_volume" in bars.columns:
             env["volume"] = bars["tick_volume"]
-        for f in self.spec.alpha.features:
-            env[f] = compute_feature(f, bars)
+        for feature in dict.fromkeys(self.spec.alpha.features):
+            env[feature] = compute_feature(feature, bars)
+
+        requested = self.spec.alpha.higher_timeframe_features
+        if not requested:
+            return env
+        supplied = {}
+        for timeframe, frame in (higher_timeframe_bars or {}).items():
+            canonical = normalize_timeframe(timeframe)
+            if canonical in supplied:
+                raise ValueError(f"duplicate supplied higher timeframe: {canonical}")
+            supplied[canonical] = frame
+        for timeframe, features in requested.items():
+            canonical = normalize_timeframe(timeframe)
+            if canonical not in supplied:
+                raise ValueError(f"missing bars for required higher timeframe {canonical}")
+            source = supplied[canonical]
+            for feature in dict.fromkeys(features):
+                values = compute_feature(feature, source)
+                env[higher_feature_alias(canonical, feature)] = align_completed_feature(
+                    bars, source, values, self.spec.context.timeframe, canonical,
+                )
         return env
 
     def __call__(self, bars: pd.DataFrame, params: dict | None = None,
-                 costs: dict | None = None) -> dict:
+                 costs: dict | None = None,
+                 higher_timeframe_bars: dict[str, pd.DataFrame] | None = None) -> dict:
         spec = self.spec
         params = {**self.default_params(), **(params or {})}
 
-        env = self._env(bars)
+        env = self._env(bars, higher_timeframe_bars)
         long_sig = eval_signal(spec.alpha.signal, env, params).to_numpy()
         short_sig = (
             eval_signal(spec.alpha.signal_short, env, params).to_numpy()

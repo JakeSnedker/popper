@@ -49,7 +49,12 @@ def load_hypothesis_file(path: str | Path) -> tuple[Hypothesis, StrategySpec]:
     if not isinstance(data, dict) or "hypothesis" not in data or "spec" not in data:
         raise ValueError(f"{path}: expected top-level 'hypothesis:' and 'spec:' blocks")
     spec = StrategySpec.model_validate({"hypothesis_id": "", **data["spec"]})
-    h = Hypothesis.model_validate({"required_features": spec.alpha.features, **data["hypothesis"]})
+    required = list(spec.alpha.features)
+    for features in spec.alpha.higher_timeframe_features.values():
+        required.extend(features)
+    h = Hypothesis.model_validate({
+        "required_features": list(dict.fromkeys(required)), **data["hypothesis"],
+    })
     return h, spec
 
 
