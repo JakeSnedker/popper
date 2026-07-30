@@ -13,7 +13,9 @@ from popper.artifacts import (
     StrategySpec,
     Verdict,
 )
+from popper.config import settings
 from popper.memory.base import AlphaMemory
+from popper.runtime import attributed_event
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS hypotheses (
@@ -47,7 +49,9 @@ CREATE TABLE IF NOT EXISTS feature_gaps (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_feature_gaps_name_kind ON feature_gaps(name, kind);
 CREATE TABLE IF NOT EXISTS research_events (
     id TEXT PRIMARY KEY, run_id TEXT, iteration INTEGER, engine TEXT, role TEXT,
-    stage TEXT, status TEXT, message TEXT, artifact_ids TEXT, payload TEXT, created_at TEXT
+    stage TEXT, status TEXT, message TEXT, artifact_ids TEXT, payload TEXT,
+    operator_id TEXT, machine_id TEXT, model_ids TEXT, release_id TEXT, dataset_id TEXT,
+    created_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_research_events_run_created
     ON research_events(run_id, created_at);
@@ -58,7 +62,7 @@ _JSON_COLS = {
     "required_features", "embedding", "tags", "behaviour_signature",
     "alpha", "wrapper", "context",
     "param_space", "raw_metrics", "equity_curve", "reasons", "diagnostics", "examples",
-    "artifact_ids", "payload",
+    "artifact_ids", "payload", "model_ids",
 }
 
 
@@ -90,10 +94,26 @@ class SqliteMemory(AlphaMemory):
                 con.execute("ALTER TABLE scorecards ADD COLUMN diagnostics TEXT")
             except sqlite3.OperationalError:
                 pass  # column already exists
-            try:
-                con.execute("ALTER TABLE research_events ADD COLUMN payload TEXT")
-            except sqlite3.OperationalError:
-                pass  # table/column already exists
+            for column, definition in (
+                ("payload", "TEXT"),
+                ("operator_id", "TEXT"),
+                ("machine_id", "TEXT"),
+                ("model_ids", "TEXT"),
+                ("release_id", "TEXT"),
+                ("dataset_id", "TEXT"),
+            ):
+                try:
+                    con.execute(
+                        f"ALTER TABLE research_events ADD COLUMN {column} {definition}"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # column already exists
+            con.execute(
+                "UPDATE research_events SET machine_id = COALESCE(machine_id, 'legacy'), "
+                "model_ids = COALESCE(model_ids, '[]'), "
+                "release_id = COALESCE(release_id, 'legacy'), "
+                "dataset_id = COALESCE(dataset_id, 'legacy')"
+            )
 
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.path, check_same_thread=False)
@@ -186,11 +206,15 @@ class SqliteMemory(AlphaMemory):
         now = datetime.now(timezone.utc).isoformat()
         with self._lock, self._connect() as con:
             n = con.execute("SELECT COUNT(*) AS c FROM research_events").fetchone()["c"]
-            row = {"id": f"RE-{n + 1:04d}", "created_at": now, **event}
+            row = {
+                "id": f"RE-{n + 1:04d}",
+                "created_at": now,
+                **attributed_event(event, operator_id=settings.operator_id or "local"),
+            }
             row.setdefault("artifact_ids", {})
             row.setdefault("payload", {})
             enc = dict(row)
-            for col in ("artifact_ids", "payload"):
+            for col in ("artifact_ids", "payload", "model_ids"):
                 enc[col] = json.dumps(enc[col])
             cols = ", ".join(enc.keys())
             placeholders = ", ".join("?" for _ in enc)

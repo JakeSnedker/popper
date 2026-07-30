@@ -6,8 +6,9 @@ from fastapi.testclient import TestClient
 from popper.security.auth import TeamAuthMiddleware, TeamPrincipal, require_team_user
 
 
-SQL = (Path(__file__).parent.parent / "supabase" / "migrations" /
-       "0002_team_auth_rls.sql").read_text(encoding="utf-8")
+MIGRATIONS = Path(__file__).parent.parent / "supabase" / "migrations"
+SQL = (MIGRATIONS / "0002_team_auth_rls.sql").read_text(encoding="utf-8")
+ATTRIBUTION_SQL = (MIGRATIONS / "0003_research_attribution.sql").read_text(encoding="utf-8")
 
 
 def test_rls_migration_covers_every_shared_table():
@@ -20,6 +21,17 @@ def test_rls_migration_covers_every_shared_table():
     assert "public.can_popper_write()" in SQL
     assert "public.is_popper_admin()" in SQL
     assert "role in ('admin', 'researcher')" in SQL
+
+
+def test_attribution_migration_is_auth_owned_and_runtime_events_are_append_only():
+    for column in ("operator_id", "machine_id", "model_ids", "release_id", "dataset_id"):
+        assert f"add column if not exists {column}" in ATTRIBUTION_SQL
+    assert "alter column operator_id set default auth.uid()" in ATTRIBUTION_SQL
+    assert "operator_id = auth.uid()" in ATTRIBUTION_SQL
+    assert "drop policy if exists popper_team_update on public.research_events" in ATTRIBUTION_SQL
+    assert "revoke update on table public.research_events from authenticated" in ATTRIBUTION_SQL
+    assert "public.popper_access_probe()" in ATTRIBUTION_SQL
+    assert "revoke all on function public.popper_access_probe() from public, anon" in ATTRIBUTION_SQL
 
 
 def test_local_mode_auth_dependency_remains_private_host_compatible(monkeypatch):

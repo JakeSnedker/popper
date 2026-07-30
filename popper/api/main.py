@@ -154,6 +154,10 @@ def _proposer_attribution(mem, events: list[dict] | None = None) -> tuple[dict, 
                     "provider": call.get("provider"),
                     "model": call.get("model"),
                     "role": call.get("role"),
+                    "operator_id": event.get("operator_id"),
+                    "machine_id": event.get("machine_id"),
+                    "release_id": event.get("release_id"),
+                    "dataset_id": event.get("dataset_id"),
                 }
         if event.get("role") == "gauntlet" and event.get("stage") == "evaluate":
             hypothesis_id = (event.get("artifact_ids") or {}).get("hypothesis_id")
@@ -197,6 +201,8 @@ def _test_rows(mem, hypotheses: list, attribution: dict) -> list[dict]:
         scorecards = {row["experiment_id"]: row for row in record.get("scorecards", [])}
         proposer = attribution.get(hypothesis.id, {
             "provider": None, "model": None, "role": None,
+            "operator_id": None, "machine_id": None,
+            "release_id": None, "dataset_id": None,
         })
         for verdict in record.get("verdicts", []):
             experiment = experiments.get(verdict["experiment_id"], {})
@@ -385,7 +391,19 @@ def analytics() -> dict:
         "attribution": {
             "attributed_tests": sum(bool(row["proposer"].get("model")) for row in tests),
             "unattributed_tests": sum(not row["proposer"].get("model") for row in tests),
-            "note": "Model attribution is available only for runs that recorded per-call telemetry.",
+            "operators": dict(Counter(
+                row["proposer"].get("operator_id") or "unknown" for row in tests
+            )),
+            "machines": dict(Counter(
+                row["proposer"].get("machine_id") or "unknown" for row in tests
+            )),
+            "releases": dict(Counter(
+                row["proposer"].get("release_id") or "unknown" for row in tests
+            )),
+            "datasets": dict(Counter(
+                row["proposer"].get("dataset_id") or "unknown" for row in tests
+            )),
+            "note": "Full attribution is available only for authenticated attributed runs.",
         },
         "event_sample_size": len(events),
     }

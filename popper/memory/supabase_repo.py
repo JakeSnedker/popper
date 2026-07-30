@@ -19,6 +19,7 @@ from uuid import uuid4
 from popper.config import settings
 from popper.memory.base import AlphaMemory
 from popper.memory.supabase_client import create_configured_client
+from popper.runtime import attributed_event
 
 _PREFIX = {"hypotheses": "H", "specs": "S", "experiments": "E", "scorecards": "SC",
            "verdicts": "V", "research_events": "RE", "feature_gaps": "FG"}
@@ -212,7 +213,10 @@ class SupabaseMemory(AlphaMemory):
         # is never an FK target -> a random id sidesteps the counter entirely: no 1000-row
         # SELECT cap, no read-before-write, no collision under concurrent writers.
         rid = f"RE-{uuid4().hex[:12]}"
-        row = {"artifact_ids": {}, "payload": {}, **event, "id": rid}  # created_at = db default
+        base = {"artifact_ids": {}, "payload": {}, **event, "id": rid}
+        # Keep the currently deployed pre-RLS project operational until migrations
+        # 0002/0003 and operator Auth are activated together.
+        row = attributed_event(base) if settings.auth_required else base
         self.client.table("research_events").insert(row).execute()
         return row
 

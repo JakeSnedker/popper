@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     supabase_password: str = ""
     auth_required: bool = False
 
+    # Node attribution. Production releases set these explicitly; local mode
+    # falls back to the hostname, package version and canonical dataset manifest.
+    operator_id: str = ""
+    machine_id: str = ""
+    release_id: str = ""
+    dataset_id: str = ""
+
     # Subscription-only runtime. Each operator authenticates the official
     # Claude and Codex CLIs with their own Claude.ai / ChatGPT account.
     llm_backend: str = "subscriptions"

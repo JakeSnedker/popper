@@ -4,10 +4,13 @@ Run this ONCE, on any machine that will write to the shared DB, before pointing
 the real hunt at Supabase. It verifies the previously-broken pieces
 (add_research_event / add_feature_gap) plus core CRUD against live Postgres.
 
-    1. Create the project, run supabase/migrations/0001_init.sql on it.
+    1. Apply migrations 0001, 0002 and 0003; add this Auth user to team_members.
     2. Set env (or .env):  POPPER_STORE=supabase
                            POPPER_SUPABASE_URL=https://xxxx.supabase.co
-                           POPPER_SUPABASE_KEY=<service-role or anon key with insert>
+                           POPPER_SUPABASE_KEY=<project anon key>
+                           POPPER_SUPABASE_EMAIL=<operator Auth email>
+                           POPPER_SUPABASE_PASSWORD=<operator password>
+                           POPPER_AUTH_REQUIRED=true
     3. .venv/Scripts/python.exe scripts/supabase_roundtrip.py
 
 Exit 0 + "ROUND-TRIP OK" = the shared map works; point runs at it. Any traceback
