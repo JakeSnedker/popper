@@ -6,6 +6,10 @@ from uuid import uuid4
 from popper.config import settings
 
 
+def _is_permission_denied(exc: Exception) -> bool:
+    return str(getattr(exc, "code", "")) == "42501"
+
+
 def main() -> int:
     if not settings.supabase_url or not settings.supabase_key:
         print("FAIL: POPPER_SUPABASE_URL / POPPER_SUPABASE_KEY are not configured")
@@ -17,13 +21,15 @@ def main() -> int:
         return 1
 
     anon = create_client(settings.supabase_url, settings.supabase_key)
-    try:
-        rows = anon.table("team_members").select("user_id").limit(1).execute().data
-    except Exception as exc:  # noqa: BLE001
-        print(f"FAIL: team_members/RLS migration is absent: {type(exc).__name__}")
-        return 1
-    if rows:
-        print("FAIL: anonymous client can read team_members")
+    for table in ("team_members", "hypotheses"):
+        try:
+            anon.table(table).select("*").limit(1).execute()
+        except Exception as exc:  # noqa: BLE001
+            if _is_permission_denied(exc):
+                continue
+            print(f"FAIL: {table}/RLS migration check failed: {type(exc).__name__}")
+            return 1
+        print(f"FAIL: anonymous client can read {table}")
         return 1
 
     probe_id = f"RE-security-probe-{uuid4().hex[:8]}"

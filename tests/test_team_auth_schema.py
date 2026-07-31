@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from popper.security.auth import TeamAuthMiddleware, TeamPrincipal, require_team_user
+from scripts.check_team_security import _is_permission_denied
 
 
 MIGRATIONS = Path(__file__).parent.parent / "supabase" / "migrations"
@@ -32,6 +33,15 @@ def test_attribution_migration_is_auth_owned_and_runtime_events_are_append_only(
     assert "revoke update on table public.research_events from authenticated" in ATTRIBUTION_SQL
     assert "public.popper_access_probe()" in ATTRIBUTION_SQL
     assert "revoke all on function public.popper_access_probe() from public, anon" in ATTRIBUTION_SQL
+
+
+def test_security_probe_distinguishes_denial_from_missing_schema():
+    class DatabaseError(Exception):
+        def __init__(self, code):
+            self.code = code
+
+    assert _is_permission_denied(DatabaseError("42501"))
+    assert not _is_permission_denied(DatabaseError("42P01"))
 
 
 def test_local_mode_auth_dependency_remains_private_host_compatible(monkeypatch):
