@@ -77,7 +77,13 @@ def publish(state: dict[str, Any], force: bool = False) -> str | None:
     try:
         _get_client().table("node_status").upsert(row, on_conflict="machine_id").execute()
     except Exception as exc:  # noqa: BLE001 - presence must never stop research.
-        return f"{type(exc).__name__}: {exc}"
+        # Truncate: a provider outage answers with a full HTML error page, and an
+        # unreadable 8 KB blob per failure is what makes an operator stop reading
+        # the log at all.
+        detail = " ".join(str(exc).split())
+        if len(detail) > 300:
+            detail = detail[:300] + " ...[truncated]"
+        return f"{type(exc).__name__}: {detail}"
     return None
 
 

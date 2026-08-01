@@ -165,3 +165,22 @@ def test_failed_heartbeat_still_throttles(monkeypatch):
     for _ in range(20):
         assert node_presence.publish({"status": "researching"}) is None
     assert len(attempts) == 1, f"failed heartbeat retried {len(attempts)} times"
+
+
+def test_presence_error_detail_is_truncated(monkeypatch):
+    """A provider outage returns an HTML page; it must not land whole in the log."""
+    from popper import node_presence
+
+    class _Outage:
+        def table(self, _name):
+            raise RuntimeError("<!DOCTYPE html>\n" + "<div>521 web server is down</div>\n" * 400)
+
+    monkeypatch.setattr(node_presence, "_client", _Outage())
+    monkeypatch.setattr(node_presence, "_last_push", 0.0)
+    monkeypatch.setattr(node_presence.settings, "store", "supabase")
+    monkeypatch.setattr(node_presence.settings, "machine_id", "outage")
+    error = node_presence.publish({"status": "researching"}, force=True)
+    assert error is not None
+    assert len(error) < 400, f"error detail was {len(error)} chars"
+    assert "\n" not in error
+    assert error.endswith("...[truncated]")
