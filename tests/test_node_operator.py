@@ -142,3 +142,26 @@ def test_presence_is_off_for_local_sqlite_nodes(monkeypatch):
     monkeypatch.setattr(node_presence.settings, "store", "sqlite")
     assert node_presence.enabled() is False
     assert node_presence.publish({"status": "researching"}, force=True) is None
+
+
+def test_failed_heartbeat_still_throttles(monkeypatch):
+    """A broken or unmigrated Supabase must not become a 5-second retry loop."""
+    from popper import node_presence
+
+    attempts = []
+
+    class _Broken:
+        def table(self, _name):
+            attempts.append(1)
+            raise RuntimeError("relation node_status does not exist")
+
+    monkeypatch.setattr(node_presence, "_client", _Broken())
+    monkeypatch.setattr(node_presence, "_last_push", 0.0)
+    monkeypatch.setattr(node_presence.settings, "store", "supabase")
+    monkeypatch.setattr(node_presence.settings, "machine_id", "unmigrated")
+
+    assert node_presence.publish({"status": "researching"}, force=True) is not None
+    # Routine heartbeats immediately after a failure are throttled, not retried.
+    for _ in range(20):
+        assert node_presence.publish({"status": "researching"}) is None
+    assert len(attempts) == 1, f"failed heartbeat retried {len(attempts)} times"

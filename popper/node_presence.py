@@ -70,11 +70,14 @@ def publish(state: dict[str, Any], force: bool = False) -> str | None:
         "heartbeat_at": _now(),
         "updated_at": _now(),
     }
+    # Throttle on the attempt, not the success: an unreachable or not-yet-migrated
+    # Supabase must not turn a 5-second local heartbeat into a 5-second network
+    # retry loop for the length of an overnight run.
+    _last_push = now
     try:
         _get_client().table("node_status").upsert(row, on_conflict="machine_id").execute()
     except Exception as exc:  # noqa: BLE001 - presence must never stop research.
         return f"{type(exc).__name__}: {exc}"
-    _last_push = now
     return None
 
 
