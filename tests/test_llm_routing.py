@@ -190,3 +190,48 @@ def test_synthesis_escalates_only_after_deterministic_failure():
     result = synthesize(hypothesis, client, enforce_local_context=False)
     assert result.alpha.signal == "close > ema_50"
     assert client.roles == ["synthesis", "synthesis_strong"]
+
+
+# --- per-operator subscription selection ---
+
+def _routes(monkeypatch, providers, detected=("claude_cli", "codex_cli")):
+    monkeypatch.setattr("popper.agents.llm.settings.llm_providers", providers)
+    monkeypatch.setattr("popper.agents.llm.detect_providers", lambda: list(detected))
+    from popper.agents.llm import _role_routes
+
+    return {role: [t.provider for t in targets] for role, targets in _role_routes().items()}
+
+
+def test_operator_with_both_subscriptions_keeps_claude_led_routing(monkeypatch):
+    routes = _routes(monkeypatch, "auto")
+    assert routes["hypothesis"] == ["claude_cli", "codex_cli"]
+    assert routes["synthesis"] == ["claude_cli", "codex_cli"]
+    # Every role still has a fallback available.
+    assert all(len(providers) == 2 for providers in routes.values())
+
+
+def test_chatgpt_only_operator_runs_every_role_on_codex(monkeypatch):
+    routes = _routes(monkeypatch, "auto", detected=("codex_cli",))
+    assert routes and all(providers == ["codex_cli"] for providers in routes.values())
+
+
+def test_claude_only_operator_runs_every_role_on_claude(monkeypatch):
+    routes = _routes(monkeypatch, "auto", detected=("claude_cli",))
+    assert routes and all(providers == ["claude_cli"] for providers in routes.values())
+
+
+def test_node_with_no_subscription_fails_loudly(monkeypatch):
+    from popper.agents.llm import NoSubscriptionAvailable
+
+    with pytest.raises(NoSubscriptionAvailable):
+        _routes(monkeypatch, "auto", detected=())
+
+
+def test_explicit_provider_override_beats_detection(monkeypatch):
+    routes = _routes(monkeypatch, "codex_cli", detected=("claude_cli", "codex_cli"))
+    assert all(providers == ["codex_cli"] for providers in routes.values())
+
+
+def test_unknown_provider_name_is_rejected(monkeypatch):
+    with pytest.raises(ValueError, match="unknown LLM provider"):
+        _routes(monkeypatch, "gemini_cli")

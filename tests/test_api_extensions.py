@@ -29,6 +29,7 @@ class Memory:
 
 
 def _client(monkeypatch):
+    monkeypatch.setattr("popper.security.auth.settings.auth_required", False)
     monkeypatch.setattr("popper.api.forge_router.get_memory", lambda: Memory())
     monkeypatch.setattr("popper.api.diagnostics_router.diagnostic_status", lambda value: {
         "hypothesis_id": value, "diagnostics": []})
@@ -56,3 +57,29 @@ def test_forge_bundle_download_is_a_real_zip(monkeypatch):
         assert any(name.endswith(".pine") for name in names)
         assert any(name.endswith(".mq5") for name in names)
         assert "README.txt" in names
+
+
+def test_fleet_endpoint_reports_nodes(monkeypatch):
+    from popper import node_presence
+
+    monkeypatch.setattr(node_presence, "fleet", lambda: [
+        {"machine_id": "jake-beast", "status": "researching", "healthy": True},
+        {"machine_id": "opb-work", "status": "stopped", "healthy": False},
+    ])
+    body = _client(monkeypatch).get("/api/fleet").json()
+    assert body["healthy"] == 1
+    assert [node["machine_id"] for node in body["nodes"]] == ["jake-beast", "opb-work"]
+    assert body["error"] is None
+
+
+def test_fleet_endpoint_degrades_instead_of_500(monkeypatch):
+    from popper import node_presence
+
+    def _boom():
+        raise RuntimeError("supabase unreachable")
+
+    monkeypatch.setattr(node_presence, "fleet", _boom)
+    response = _client(monkeypatch).get("/api/fleet")
+    assert response.status_code == 200
+    assert response.json()["nodes"] == []
+    assert "unreachable" in response.json()["error"]

@@ -5,10 +5,16 @@ from pathlib import Path
 
 import pandas as pd
 
+from popper.config import settings
 from popper.data.timeframes import normalize_timeframe
 
-DATA_DIR = Path(__file__).resolve().parents[2] / "data"
-CANONICAL_DATASET_DIR = DATA_DIR / "ftmo-us30-v1"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = REPO_ROOT / "data"
+_configured_dataset = Path(settings.dataset_dir).expanduser()
+CANONICAL_DATASET_DIR = (
+    _configured_dataset if _configured_dataset.is_absolute()
+    else REPO_ROOT / _configured_dataset
+)
 _OHLCV = ["open", "high", "low", "close"]
 
 

@@ -13,12 +13,17 @@ Rebuild gui/dist first if it's stale:  cd gui && npm install && npm run build
 """
 from pathlib import Path
 
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from popper.api.main import app
 
 _DIST = Path(__file__).resolve().parent / "gui" / "dist"
 if _DIST.is_dir():
+    @app.get("/reset-password", include_in_schema=False)
+    def reset_password_page():
+        return FileResponse(_DIST / "index.html")
+
     app.mount("/", StaticFiles(directory=str(_DIST), html=True), name="gui")
 else:  # API still works; UI just won't render until you build gui/dist.
     print(f"[docker_serve] WARNING: {_DIST} missing — API only. Run `npm run build` in gui/.")

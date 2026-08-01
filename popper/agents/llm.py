@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from popper.agents.subscriptions import detect_providers
 from popper.config import settings
 
 # Logical roles, not provider model ids. LLMRouter resolves each role from config.
@@ -37,6 +38,16 @@ _RATE_MARKERS = (
 )
 _CODEX_EXECUTABLE = "codex.cmd" if os.name == "nt" else "codex"
 _KNOWN_PROVIDERS = {"claude_cli", "codex_cli"}
+# Model to use for a role when the operator owns only this provider and the
+# configured route named nobody else they have.
+_SINGLE_PROVIDER_FALLBACK = {
+    "hypothesis": {"claude_cli": "sonnet", "codex_cli": "default"},
+    "hypothesis_strong": {"claude_cli": "sonnet", "codex_cli": "default"},
+    "wildcard": {"claude_cli": "opus", "codex_cli": "default"},
+    "synthesis": {"claude_cli": "haiku", "codex_cli": "default"},
+    "synthesis_strong": {"claude_cli": "sonnet", "codex_cli": "default"},
+    "audit": {"claude_cli": "opus", "codex_cli": "default"},
+}
 _HYPOTHESIS_ITEM_SCHEMA = {
     "type": "object",
     "properties": {
@@ -97,6 +108,10 @@ class LLMError(RuntimeError):
 
 class LLMOutputError(LLMError):
     """The provider answered, but did not return usable model content."""
+
+
+class NoSubscriptionAvailable(LLMError):
+    """The operator is not signed in to any supported subscription CLI."""
 
 
 class LLMProviderError(LLMError):
@@ -503,10 +518,53 @@ class LLMRouter:
         }
 
 
+def enabled_providers() -> set[str]:
+    """Subscription CLIs this node may use.
+
+    "auto" (the default) asks the CLIs themselves, so a node configures itself
+    from whatever the operator is logged into. An explicit list is honoured as
+    an override but still cannot invent a provider Popper does not know.
+    """
+    configured = settings.llm_providers.strip()
+    if configured.lower() == "auto":
+        detected = detect_providers()
+        if not detected:
+            raise NoSubscriptionAvailable(
+                "no authenticated subscription CLI found; sign in with Claude.ai "
+                "(`claude`) or ChatGPT (`codex login`) before starting a node"
+            )
+        return set(detected)
+    names = {part.strip() for part in configured.split(",") if part.strip()}
+    unknown = names - _KNOWN_PROVIDERS
+    if unknown:
+        raise ValueError(f"unknown LLM provider(s) in POPPER_LLM_PROVIDERS: {sorted(unknown)}")
+    if not names:
+        raise ValueError("POPPER_LLM_PROVIDERS cannot be empty")
+    return names
+
+
+def _for_this_node(role: str, targets: list[RouteTarget], allowed: set[str]) -> list[RouteTarget]:
+    """Drop targets this node has no subscription for, preserving fallback order."""
+    kept = [target for target in targets if target.provider in allowed]
+    if kept:
+        return kept
+    # The role named only providers this operator lacks. Fall back to their own
+    # subscription rather than failing the node: a single-provider operator must
+    # still be able to run every role.
+    substitute = _SINGLE_PROVIDER_FALLBACK.get(role)
+    for provider in sorted(allowed):
+        model = substitute.get(provider) if substitute else None
+        if model:
+            return [RouteTarget(provider, model)]
+    raise ValueError(
+        f"role {role!r} has no route available for providers {sorted(allowed)}"
+    )
+
+
 def _role_routes() -> dict[str, list[RouteTarget]]:
     backend = settings.llm_backend.lower()
     if backend == "cli":
-        return {
+        routes = {
             "hypothesis": parse_route("claude_cli:sonnet"),
             "hypothesis_strong": parse_route("claude_cli:sonnet"),
             "wildcard": parse_route("claude_cli:opus"),
@@ -514,16 +572,19 @@ def _role_routes() -> dict[str, list[RouteTarget]]:
             "synthesis_strong": parse_route("claude_cli:sonnet"),
             "audit": parse_route("claude_cli:opus"),
         }
-    if backend not in {"subscriptions", "hybrid"}:  # hybrid: pre-release alias
+    elif backend in {"subscriptions", "hybrid"}:  # hybrid: pre-release alias
+        routes = {
+            "hypothesis": parse_route(settings.llm_hypothesis_route),
+            "hypothesis_strong": parse_route(settings.llm_hypothesis_strong_route),
+            "wildcard": parse_route(settings.llm_wildcard_route),
+            "synthesis": parse_route(settings.llm_synthesis_route),
+            "synthesis_strong": parse_route(settings.llm_synthesis_strong_route),
+            "audit": parse_route(settings.llm_audit_route),
+        }
+    else:
         raise ValueError("POPPER_LLM_BACKEND must be subscriptions or cli")
-    return {
-        "hypothesis": parse_route(settings.llm_hypothesis_route),
-        "hypothesis_strong": parse_route(settings.llm_hypothesis_strong_route),
-        "wildcard": parse_route(settings.llm_wildcard_route),
-        "synthesis": parse_route(settings.llm_synthesis_route),
-        "synthesis_strong": parse_route(settings.llm_synthesis_strong_route),
-        "audit": parse_route(settings.llm_audit_route),
-    }
+    allowed = enabled_providers()
+    return {role: _for_this_node(role, targets, allowed) for role, targets in routes.items()}
 
 
 def get_llm() -> LLMRouter:

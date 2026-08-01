@@ -8,7 +8,13 @@ const modeHelp: Record<SignalEdgeMode, string> = {
   strict: "Hard gate: every horizon in the family needs strong evidence.",
 };
 
-export function ResearchControls({ onRunComplete }: { onRunComplete?: (runId: string) => void }) {
+export function ResearchControls({
+  canWrite,
+  onRunComplete,
+}: {
+  canWrite: boolean;
+  onRunComplete?: (runId: string) => void;
+}) {
   const [iterations, setIterations] = useState(3);
   const [signalEdgeMode, setSignalEdgeMode] = useState<SignalEdgeMode>("balanced");
   const [exitMenu, setExitMenu] = useState(true);
@@ -41,12 +47,14 @@ export function ResearchControls({ onRunComplete }: { onRunComplete?: (runId: st
         <div>
           <h2 className="text-sm font-semibold text-slate-200">Research Run</h2>
           <p className="text-xs text-slate-500 mt-1">
-            Launch the Director from the dashboard. The request waits for completion; use small runs locally.
+            {canWrite
+              ? "Launch the Director from this machine. The request waits for completion; use small runs locally."
+              : "Viewer access is read-only. Research can be started only by an admin or researcher node."}
           </p>
         </div>
         <button
           onClick={run}
-          disabled={running}
+          disabled={running || !canWrite}
           className="px-3 py-2 rounded-md bg-accent text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {running ? "Running..." : "Start run"}
@@ -61,6 +69,7 @@ export function ResearchControls({ onRunComplete }: { onRunComplete?: (runId: st
             min={1}
             max={50}
             value={iterations}
+            disabled={!canWrite}
             onChange={(e) => setIterations(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
             className="w-full rounded-md bg-ink-800 border border-ink-600 px-2 py-1.5 text-slate-200"
           />
@@ -69,6 +78,7 @@ export function ResearchControls({ onRunComplete }: { onRunComplete?: (runId: st
           <span className="text-slate-400">Signal-edge mode</span>
           <select
             value={signalEdgeMode}
+            disabled={!canWrite}
             onChange={(e) => setSignalEdgeMode(e.target.value as SignalEdgeMode)}
             className="w-full rounded-md bg-ink-800 border border-ink-600 px-2 py-1.5 text-slate-200"
           >
@@ -81,6 +91,7 @@ export function ResearchControls({ onRunComplete }: { onRunComplete?: (runId: st
           <input
             type="checkbox"
             checked={exitMenu}
+            disabled={!canWrite}
             onChange={(e) => setExitMenu(e.target.checked)}
             className="h-4 w-4 accent-blue-500"
           />

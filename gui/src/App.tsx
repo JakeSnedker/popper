@@ -79,6 +79,11 @@ export default function App() {
           </div>
           <div className="flex items-center gap-4">
             <HealthPill />
+            {auth.role && (
+              <span className="rounded border border-ink-600 px-2 py-1 text-[10px] font-mono uppercase tracking-wide text-slate-400">
+                {auth.role}
+              </span>
+            )}
             {auth.required && (
               <button
                 onClick={() => void auth.logout()}

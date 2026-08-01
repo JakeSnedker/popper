@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { useAsync } from "../lib/useAsync";
 import type { HypothesisRecord, MonteCarloDiagnosticResult } from "../lib/types";
+import { useAuth } from "./AuthGate";
 
 export function StrategyActions({
   record,
@@ -11,6 +12,7 @@ export function StrategyActions({
   onDiagnosticComplete: () => void;
 }) {
   const id = record.hypothesis.id;
+  const auth = useAuth();
   const status = useAsync(() => api.diagnostics(id), [id]);
   const diagnostic = status.data?.diagnostics.find((item) => item.name === "monte_carlo");
   const [running, setRunning] = useState(false);
@@ -55,7 +57,7 @@ export function StrategyActions({
         <div className="flex flex-wrap gap-2">
           <button
             onClick={runMonteCarlo}
-            disabled={running || status.loading || !diagnostic?.runnable}
+            disabled={!auth.canWrite || running || status.loading || !diagnostic?.runnable}
             className="rounded-md bg-ink-600 px-3 py-1.5 text-xs text-slate-200 hover:bg-ink-500 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {running ? "Running Monte Carlo..." : diagnostic?.completed ? "Re-run Monte Carlo" : "Run Monte Carlo"}
@@ -70,6 +72,9 @@ export function StrategyActions({
           )}
         </div>
       </div>
+      {!auth.canWrite && (
+        <p className="text-xs text-slate-500 mt-3">Viewer access cannot run or re-run diagnostics.</p>
+      )}
       {diagnostic && !diagnostic.runnable && <p className="text-xs text-amber-400 mt-3">{diagnostic.reason}</p>}
       {result && (
         <p className={`text-xs mt-3 ${result.cone.p_ruin > 0.15 ? "text-red-400" : "text-emerald-400"}`}>

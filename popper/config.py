@@ -23,11 +23,18 @@ class Settings(BaseSettings):
     machine_id: str = ""
     release_id: str = ""
     dataset_id: str = ""
+    # Canonical dataset is distributed separately from Git and may live on another drive.
+    dataset_dir: str = "data/ftmo-us30-v1"
 
     # Subscription-only runtime. Each operator authenticates the official
     # Claude and Codex CLIs with their own Claude.ai / ChatGPT account.
     llm_backend: str = "subscriptions"
     llm_route_policy: str = "round_robin"  # priority | round_robin
+    # Which subscription CLIs this node may use. "auto" detects the operator's
+    # actual logins: both -> Claude leads and Codex is the fallback; only one ->
+    # every route collapses onto the subscription they own. Set an explicit list
+    # (e.g. codex_cli) only to deliberately hold a provider back.
+    llm_providers: str = "auto"
     llm_hypothesis_route: str = "claude_cli:sonnet,codex_cli:default"
     llm_hypothesis_strong_route: str = "codex_cli:default,claude_cli:sonnet"
     llm_wildcard_route: str = "codex_cli:default,claude_cli:opus"

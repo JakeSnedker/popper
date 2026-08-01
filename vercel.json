@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "npm --prefix gui ci",
+  "buildCommand": "npm --prefix gui run build",
+  "outputDirectory": "gui/dist",
+  "rewrites": [
+    {
+      "source": "/reset-password",
+      "destination": "/index.html"
+    }
+  ]
+}

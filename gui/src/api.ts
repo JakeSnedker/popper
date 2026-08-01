@@ -1,4 +1,4 @@
-import { accessToken } from "./auth";
+import { accessToken, apiUrl } from "./auth";
 import type {
   AnalyticsResponse,
   Architecture,
@@ -6,6 +6,7 @@ import type {
   HypothesisRecord,
   Hypothesis,
   FeatureGap,
+  FleetNode,
   MapResponse,
   MonteCarloCone,
   MonteCarloDiagnosticResult,
@@ -24,7 +25,7 @@ async function authorizedFetch(url: string, init?: RequestInit): Promise<Respons
   const headers = new Headers(init?.headers);
   const token = await accessToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  return fetch(url, { ...init, headers });
+  return fetch(apiUrl(url), { ...init, headers });
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -103,6 +104,7 @@ export const api = {
     ),
   downloadForge: (id: string) =>
     download(`/api/hypotheses/${encodeURIComponent(id)}/forge-download`),
+  fleet: () => get<{ nodes: FleetNode[]; healthy: number; error: string | null }>("/api/fleet"),
   verdicts: (limit = 20) => get<{ verdicts: VerdictFeedItem[] }>(`/api/verdicts?limit=${limit}`),
   timeline: (id: string) =>
     get<{ experiments: TimelinePoint[] }>(`/api/timeline?hypothesis_id=${encodeURIComponent(id)}`),

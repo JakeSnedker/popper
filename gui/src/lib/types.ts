@@ -465,6 +465,20 @@ export interface AnalyticsResponse {
   event_sample_size: number;
 }
 
+// shared node fleet
+export interface FleetNode {
+  machine_id: string;
+  operator_label: string;
+  status: string;
+  release_id: string;
+  dataset_id: string;
+  last_error: string | null;
+  started_at: string | null;
+  heartbeat_at: string;
+  seconds_since_heartbeat: number | null;
+  healthy: boolean;
+}
+
 // app navigation
 export type View =
   | { kind: "home" }

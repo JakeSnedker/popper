@@ -3,11 +3,13 @@ import type { Architecture, View } from "../lib/types";
 import { AlphaMap } from "../components/AlphaMap";
 import { DataSources } from "../components/DataSources";
 import { FeatureGaps } from "../components/FeatureGaps";
+import { NodeFleet } from "../components/NodeFleet";
 import { PipelineMap } from "../components/PipelineMap";
 import { ResearchControls } from "../components/ResearchControls";
 import { ResearchTrace } from "../components/ResearchTrace";
 import { SurvivorSpotlight } from "../components/SurvivorSpotlight";
 import { VerdictStream } from "../components/VerdictStream";
+import { useAuth } from "../components/AuthGate";
 
 function ProgressRing({ pct }: { pct: number }) {
   const r = 30;
@@ -37,6 +39,7 @@ export function ControlCenter({
 }) {
   const open = (id: string) => onNavigate({ kind: "subsystem", id });
   const [activeRunId, setActiveRunId] = useState<string | undefined>();
+  const auth = useAuth();
 
   return (
     <div className="space-y-8 max-w-6xl">
@@ -68,10 +71,13 @@ export function ControlCenter({
       {/* operator controls */}
       <section className="grid lg:grid-cols-3 gap-4 items-start">
         <div className="lg:col-span-2 space-y-4">
-          <ResearchControls onRunComplete={setActiveRunId} />
+          <ResearchControls canWrite={auth.canWrite} onRunComplete={setActiveRunId} />
           <DataSources />
         </div>
-        <FeatureGaps />
+        <div className="space-y-4">
+          <NodeFleet />
+          <FeatureGaps />
+        </div>
       </section>
 
       <section>
