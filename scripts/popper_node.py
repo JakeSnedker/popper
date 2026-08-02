@@ -85,6 +85,8 @@ def _check_config() -> str:
         raise RuntimeError("missing settings: " + ", ".join(missing))
     if settings.store != "supabase" or not settings.auth_required:
         raise RuntimeError("POPPER_STORE=supabase and POPPER_AUTH_REQUIRED=true are required")
+    if settings.research_mode not in ("explore", "balanced", "exploit", "auto"):
+        raise RuntimeError(f"invalid POPPER_RESEARCH_MODE={settings.research_mode}")
     return "private operator configuration is complete"
 
 
@@ -224,7 +226,8 @@ def _terminate_tree(pid: int, force: bool = True) -> None:
         pass
 
 
-def run_worker(minutes: float, iterations: int, smoke_seconds: int = 0) -> int:
+def run_worker(minutes: float, iterations: int, mode: str,
+               smoke_seconds: int = 0) -> int:
     paths = NodePaths.for_root(REPO_ROOT)
     paths.ensure()
     lock = NodeLock(paths.lock_file)
@@ -247,6 +250,7 @@ def run_worker(minutes: float, iterations: int, smoke_seconds: int = 0) -> int:
         release_id=settings.release_id,
         machine_id=settings.machine_id,
         last_error=None,
+        research_mode=mode,
     )
 
     child: subprocess.Popen[Any] | None = None
@@ -269,7 +273,8 @@ def run_worker(minutes: float, iterations: int, smoke_seconds: int = 0) -> int:
                 str(minutes),
                 "--iterations",
                 str(iterations),
-                "--explore-heavy",
+                "--mode",
+                mode,
             ]
             with paths.hunt_log.open("a", encoding="utf-8", buffering=1) as log:
                 log.write(f"\n[{utc_now()}] starting hunt\n")
@@ -379,7 +384,8 @@ def run_worker(minutes: float, iterations: int, smoke_seconds: int = 0) -> int:
     return 0
 
 
-def start_node(minutes: float, iterations: int, smoke_seconds: int = 0) -> int:
+def start_node(minutes: float, iterations: int, mode: str,
+               smoke_seconds: int = 0) -> int:
     paths = NodePaths.for_root(REPO_ROOT)
     paths.ensure()
     state = status_snapshot(paths)
@@ -404,6 +410,8 @@ def start_node(minutes: float, iterations: int, smoke_seconds: int = 0) -> int:
                 str(minutes),
                 "--iterations",
                 str(iterations),
+                "--mode",
+                mode,
                 *(["--smoke-seconds", str(smoke_seconds)] if smoke_seconds > 0 else []),
             ],
             cwd=REPO_ROOT,
@@ -431,7 +439,10 @@ def stop_node(timeout: int, force: bool) -> int:
     pid = state.get("pid") if isinstance(state.get("pid"), int) else None
     if not pid or not state["alive"]:
         paths.stop_file.unlink(missing_ok=True)
-        _update_state(paths, publish=True, status="stopped", pid=None, child_pid=None)
+        _update_state(
+            paths, publish=True, status="stopped", pid=None, child_pid=None,
+            last_error=None,
+        )
         print("Popper node is already stopped.")
         return 0
 
@@ -446,7 +457,10 @@ def stop_node(timeout: int, force: bool) -> int:
             return 1
         _terminate_tree(pid)
         time.sleep(1)
-    _update_state(paths, publish=True, status="stopped", pid=None, child_pid=None, stopped_at=utc_now())
+    _update_state(
+        paths, publish=True, status="stopped", pid=None, child_pid=None,
+        stopped_at=utc_now(), last_error=None,
+    )
     paths.stop_file.unlink(missing_ok=True)
     print("Popper node stopped.")
     return 0
@@ -471,6 +485,7 @@ def print_status(as_json: bool) -> int:
     print(f"PID:         {value.get('pid') or '-'}")
     print(f"Machine:     {value.get('machine_id') or settings.machine_id or '-'}")
     print(f"Release:     {value.get('release_id') or settings.release_id or '-'}")
+    print(f"Mode:        {value.get('research_mode') or settings.research_mode}")
     print(f"Heartbeat:   {value.get('heartbeat_at') or '-'}")
     print(f"Preflight:   {'PASS' if value.get('preflight_ok') else 'not passed'}")
     print(f"Last error:  {value.get('last_error') or '-'}")
@@ -491,11 +506,15 @@ def main() -> int:
     start = commands.add_parser("start", help="preflight and start one background worker")
     start.add_argument("--minutes", type=float, default=25)
     start.add_argument("--iterations", type=int, default=20)
+    start.add_argument("--mode", choices=("explore", "balanced", "exploit", "auto"),
+                       default=settings.research_mode)
     start.add_argument("--smoke-seconds", type=int, default=0, help=argparse.SUPPRESS)
 
     worker = commands.add_parser("worker", help="internal foreground worker controller")
     worker.add_argument("--minutes", type=float, default=25)
     worker.add_argument("--iterations", type=int, default=20)
+    worker.add_argument("--mode", choices=("explore", "balanced", "exploit", "auto"),
+                        default=settings.research_mode)
     worker.add_argument("--smoke-seconds", type=int, default=0, help=argparse.SUPPRESS)
 
     stop = commands.add_parser("stop", help="stop the background worker")
@@ -514,9 +533,9 @@ def main() -> int:
             print_preflight(result)
         return 0 if result["ok"] else 1
     if args.command == "start":
-        return start_node(args.minutes, args.iterations, args.smoke_seconds)
+        return start_node(args.minutes, args.iterations, args.mode, args.smoke_seconds)
     if args.command == "worker":
-        return run_worker(args.minutes, args.iterations, args.smoke_seconds)
+        return run_worker(args.minutes, args.iterations, args.mode, args.smoke_seconds)
     if args.command == "stop":
         return stop_node(args.timeout, args.force)
     if args.command == "status":

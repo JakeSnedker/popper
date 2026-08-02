@@ -152,7 +152,7 @@ def _accept(obj, best_obj, survived, stable, pbo_ok, require_survive) -> bool:
 
 
 def optimize(spec, run_fn=run, period=None, cfg: GauntletConfig | None = None,
-             mem=None, max_iters: int = 24):
+             mem=None, max_iters: int = 24, progress=None):
     """Greedy coordinate search around `spec`: each sweep tries the numeric
     grid shifts AND the structural wrapper variants (`_wrapper_neighbors`).
     Returns (best_spec, best_scorecard, best_verdict, history).
@@ -187,6 +187,8 @@ def optimize(spec, run_fn=run, period=None, cfg: GauntletConfig | None = None,
         return "ok"
 
     best = spec
+    if progress:
+        progress("baseline", 0, max_iters)
     best_obj, obj_key, best_sc, best_v, base_survived, base_stable, base_pbo = _eval(spec)
     # rescue vs refine: only PROTECT an already-surviving seed (require every step
     # stay a survivor). A cost-killed KILL is allowed to climb through still-losing-
@@ -211,10 +213,12 @@ def optimize(spec, run_fn=run, period=None, cfg: GauntletConfig | None = None,
                     continue
                 evals += 1
                 moves_tried += 1
+                mname = f"{name}{'+' if direction > 0 else '-'}"
+                if progress:
+                    progress(mname, evals, max_iters)
                 obj, _, sc, v, survived, stable, pbo_ok = _eval(cand)
                 accepted = _accept(obj, best_obj, survived, stable, pbo_ok, require_survive)
                 why = _why(sc, v, survived, stable, pbo_ok, obj)
-                mname = f"{name}{'+' if direction > 0 else '-'}"
                 history.append({"move": mname,
                                 "param": name, "direction": direction,
                                 "param_space": cand.param_space, "objective": obj,
@@ -233,6 +237,8 @@ def optimize(spec, run_fn=run, period=None, cfg: GauntletConfig | None = None,
                 break
             evals += 1
             moves_tried += 1
+            if progress:
+                progress(mname, evals, max_iters)
             obj, _, sc, v, survived, stable, pbo_ok = _eval(cand)
             accepted = _accept(obj, best_obj, survived, stable, pbo_ok, require_survive)
             why = _why(sc, v, survived, stable, pbo_ok, obj)

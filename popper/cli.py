@@ -85,14 +85,19 @@ def _research(argv: list[str]) -> None:
     p.add_argument("--no-exit-menu", action="store_true", help="skip the v0.3 exit-menu search")
     p.add_argument("--signal-edge-mode", choices=("loose", "balanced", "strict"), default="balanced",
                    help="Layer-1 signal-edge strictness (default: balanced)")
+    p.add_argument("--mode", choices=("explore", "balanced", "exploit", "auto"),
+                   default="balanced", help="research allocation (default: balanced)")
     a = p.parse_args(argv)
 
     from popper.falsify import GauntletConfig
-    from popper.orchestrator import run_research
+    from popper.orchestrator import research_budget, run_research
     # v0.3 §5: autonomous discovery runs the staged exit menu by default (agents
     # propose alphas; the gauntlet searches each one's exit). --no-exit-menu opts out.
     cfg = GauntletConfig(exit_menu=not a.no_exit_menu, signal_edge_mode=a.signal_edge_mode)
-    _print_run(run_research(iterations=a.iterations, cfg=cfg))
+    mode = "explore" if a.mode == "auto" else a.mode
+    _print_run(run_research(
+        iterations=a.iterations, cfg=cfg, budget=research_budget(mode),
+    ))
 
 
 def _print_run(s) -> None:
@@ -100,6 +105,8 @@ def _print_run(s) -> None:
     print(bar)
     print(f"POPPER RESEARCH RUN — {s.iterations} iterations")
     print(f"  budget spent (engine: iters): {s.budget_spent}")
+    if s.stopped_reason:
+        print(f"  stopped: {s.stopped_reason}")
     print(bar)
     print(f"proposed {s.proposed}  |  killed {s.killed}  |  survived {s.survived}  |  worker refinements {s.worker_runs}  |  skipped {s.skipped}")
     if s.failures:

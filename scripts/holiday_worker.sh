@@ -10,7 +10,7 @@ export POPPER_LLM_BACKEND="${POPPER_LLM_BACKEND:-subscriptions}"
 
 echo "[$(date '+%F %T')] holiday worker START (pid $$ backend=$POPPER_LLM_BACKEND)" >> "$LOG"
 while true; do
-  out=$($PY scripts/run_hunt.py --minutes 25 --iterations 20 --explore-heavy 2>&1)
+  out=$($PY scripts/run_hunt.py --minutes 25 --iterations 20 --mode auto 2>&1)
   rc=$?
   echo "$out" | grep -E "\[batch|PROVIDER_PAUSED|final counts" | tail -3 >> "$LOG"
   if [ "$rc" -eq 75 ]; then

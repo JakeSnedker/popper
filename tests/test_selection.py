@@ -16,8 +16,15 @@ def _sc(pbo, stability):
 
 
 def _cand(name, metrics, verdict, scorecard=None):
+    diagnostics = None
+    if scorecard is not None:
+        diagnostics = {
+            "gate_signal_edge": {"passed": True},
+            "gate2_robustness": {"passed": True},
+            "gate4_multiple_testing": {"passed": True},
+        }
     return {"spec": name, "metrics": metrics, "verdict": verdict,
-            "reasons": [], "scorecard": scorecard}
+            "reasons": [], "scorecard": scorecard, "diagnostics": diagnostics}
 
 
 SURVIVOR = _cand("surv", {"expectancy": 0.20, "expectancy_net": 0.15}, "survive",
@@ -33,11 +40,14 @@ DEAD = _cand("dead", {"expectancy": -0.30, "expectancy_net": -0.40}, "kill",
 def test_classify_tiers():
     assert classify(SURVIVOR["metrics"], "survive", scorecard=SURVIVOR["scorecard"]) == "survivor"
     assert classify(SURVIVOR["metrics"], "promote") == "survivor"
-    assert classify(COST_KILLED["metrics"], "kill", scorecard=COST_KILLED["scorecard"]) == "cost_killed"
-    assert classify(NEAR_MISS["metrics"], "kill", scorecard=NEAR_MISS["scorecard"], cfg=CFG) == "near_miss"
-    assert classify(DEAD["metrics"], "kill", scorecard=DEAD["scorecard"], cfg=CFG) == "dead"
-    # no scorecard + no gross edge = nothing to judge nearness by -> dead
-    assert classify({"expectancy": -0.1}, "kill") == "dead"
+    assert classify(COST_KILLED["metrics"], "kill", scorecard=COST_KILLED["scorecard"],
+                    diagnostics=COST_KILLED["diagnostics"]) == "cost_killed"
+    assert classify(NEAR_MISS["metrics"], "kill", scorecard=NEAR_MISS["scorecard"], cfg=CFG,
+                    diagnostics=NEAR_MISS["diagnostics"]) == "near_miss"
+    assert classify(DEAD["metrics"], "kill", scorecard=DEAD["scorecard"], cfg=CFG,
+                    diagnostics=DEAD["diagnostics"]) == "dead"
+    # Missing gate evidence is reported honestly rather than guessed.
+    assert classify({"expectancy": -0.1}, "kill") == "unclassifiable"
 
 
 def test_rank_orders_tiers_and_drops_dead():
@@ -48,8 +58,20 @@ def test_rank_orders_tiers_and_drops_dead():
     assert all(c["spec"] != "dead" for c in ranked)
 
 
+def test_rank_drops_unclassifiable_instead_of_crashing():
+    # A spec killed at gate0/gate1 passed the signal-edge gate but never reached
+    # robustness/multiple-testing: unrankable, must not reach the tier sort.
+    partial = {"spec": "partial", "metrics": {"expectancy": 0.1}, "verdict": "kill",
+               "reasons": [], "scorecard": _sc(0.35, 0.65),
+               "diagnostics": {"gate_signal_edge": {"passed": True},
+                               "gate1_walkforward": {"passed": False}}}
+    ranked = rank_targets([partial, COST_KILLED], cfg=CFG)
+    assert [c["spec"] for c in ranked] == ["cost"]
+
+
 def test_rank_sorts_within_tier_by_net_expectancy():
-    worse = _cand("cost_worse", {"expectancy": 0.05, "expectancy_net": -0.10}, "kill")
+    worse = _cand("cost_worse", {"expectancy": 0.05, "expectancy_net": -0.10}, "kill",
+                  _sc(0.35, 0.65))
     ranked = rank_targets([worse, COST_KILLED], cfg=CFG)
     assert [c["spec"] for c in ranked] == ["cost", "cost_worse"]
 

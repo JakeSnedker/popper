@@ -26,6 +26,15 @@ _PREFIX = {"hypotheses": "H", "specs": "S", "experiments": "E", "scorecards": "S
 _ID_RETRIES = 15  # recompute-and-retry attempts on the id PK race (many concurrent writers)
 
 
+# PostgREST keeps an `in_` list inside a URL; 100 ids per request stays well
+# under any gateway limit while still cutting round-trips by two orders.
+CHUNK = 100
+_ANALYSIS_METRICS = (
+    "profit_factor", "profit_factor_net", "expectancy", "expectancy_net",
+    "sharpe", "win_rate", "max_drawdown", "avg_cost_r",
+)
+
+
 class SupabaseMemory(AlphaMemory):
     def __init__(self):
         if not settings.supabase_url or not settings.supabase_key:
@@ -149,16 +158,30 @@ class SupabaseMemory(AlphaMemory):
 
         def paged(table: str, columns: str, filter_col: str | None = None,
                   values: list[str] | None = None) -> list[dict]:
-            rows, start, page = [], 0, 1000
-            while True:
-                query = self.client.table(table).select(columns)
-                if filter_col and values and len(values) <= 100:
-                    query = query.in_(filter_col, values)
-                batch = query.order("id").range(start, start + page - 1).execute().data
-                rows.extend(batch)
-                if len(batch) < page:
-                    break
-                start += page
+            """Bulk read, filtered in id chunks.
+
+            The filter is CHUNKED rather than dropped past some id count: an
+            unfiltered read of a grown table is a full scan plus sort, which is
+            what a Postgres statement timeout looks like once the fleet has a few
+            hundred hypotheses. Cost must track the ids asked for, not the size
+            of the table.
+            """
+            if filter_col and not values:
+                return []
+            chunks = [values[i:i + CHUNK] for i in range(0, len(values), CHUNK)] \
+                if filter_col else [None]
+            rows = []
+            for chunk in chunks:
+                start, page = 0, 1000
+                while True:
+                    query = self.client.table(table).select(columns)
+                    if chunk is not None:
+                        query = query.in_(filter_col, chunk)
+                    batch = query.order("id").range(start, start + page - 1).execute().data
+                    rows.extend(batch)
+                    if len(batch) < page:
+                        break
+                    start += page
             return rows
 
         specs = paged(
@@ -170,10 +193,22 @@ class SupabaseMemory(AlphaMemory):
             records[row["hypothesis_id"]]["specs"].append(row)
 
         spec_ids = list(spec_owner)
+        metric_columns = ",".join(
+            f"{name}:raw_metrics->{name}" for name in _ANALYSIS_METRICS
+        )
         experiments = paged(
-            "experiments", "id,spec_id,dataset,trades_n,raw_metrics", "spec_id", spec_ids,
+            "experiments",
+            f"id,spec_id,dataset,trades_n,created_at,{metric_columns}",
+            "spec_id", spec_ids,
         ) if spec_ids else []
         experiments = [row for row in experiments if row["spec_id"] in spec_owner]
+        for row in experiments:
+            raw_metrics = {}
+            for name in _ANALYSIS_METRICS:
+                value = row.pop(name, None)
+                if value is not None:
+                    raw_metrics[name] = value
+            row["raw_metrics"] = raw_metrics
         experiment_owner = {row["id"]: spec_owner[row["spec_id"]] for row in experiments}
         for row in experiments:
             records[spec_owner[row["spec_id"]]]["experiments"].append(row)
@@ -181,7 +216,7 @@ class SupabaseMemory(AlphaMemory):
         experiment_ids = list(experiment_owner)
         scorecards = paged(
             "scorecards",
-            "id,experiment_id,robustness,regime_stability,correlation,deflated_sharpe,pbo,diagnostics",
+            "id,experiment_id,robustness,parameter_stability,regime_stability,correlation,deflated_sharpe,pbo,diagnostics,created_at",
             "experiment_id", experiment_ids,
         ) if experiment_ids else []
         for row in scorecards:

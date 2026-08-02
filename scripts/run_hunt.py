@@ -13,7 +13,7 @@ import uuid
 from popper.agents import get_llm
 from popper.config import settings
 from popper.memory import get_memory
-from popper.orchestrator import run_research
+from popper.orchestrator import research_budget, run_research
 from popper.portfolio import book_from_mem
 
 
@@ -32,16 +32,52 @@ def _book_summary(mem) -> None:
     print(f"final counts: {mem.stats()['counts']}")
 
 
+def _auto_exploit(mem, deadline: float, resume_at: float) -> bool:
+    """Use local compute during provider backoff. False means no work remains."""
+    batch = 0
+    limit = max(1, settings.auto_exploit_batch_size)
+    while time.time() < deadline and time.monotonic() < resume_at:
+        batch += 1
+        run_id = f"X-{uuid.uuid4().hex[:8]}"
+        summary = run_research(
+            mem=mem,
+            llm=None,
+            iterations=1,
+            run_id=run_id,
+            budget=research_budget("exploit"),
+            backlog_limit=limit,
+            exploit_max_evals=max(0, settings.auto_exploit_max_evals),
+        )
+        print(
+            f"[auto exploit {batch} {run_id}] worker_runs={summary.worker_runs} "
+            f"skipped={summary.skipped} stopped={summary.stopped_reason or '-'}",
+            flush=True,
+        )
+        if summary.stopped_reason == "exploit backlog exhausted":
+            return False
+        if summary.worker_runs == 0 and summary.failures:
+            return False
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--minutes", type=float, default=60, help="wall-clock budget")
     parser.add_argument("--iterations", type=int, default=12, help="candidate iterations per batch")
     parser.add_argument("--seeded", action="store_true", help="scripted no-LLM smoke")
-    parser.add_argument("--explore-heavy", action="store_true",
-                        help="explore-heavy: 90/10 explore/wildcard, no exploit")
+    parser.add_argument(
+        "--mode", choices=("explore", "balanced", "exploit", "auto"),
+        default=settings.research_mode,
+        help="explore, balanced, exploit-only, or explore with exploit during LLM backoff",
+    )
+    parser.add_argument(
+        "--exploit-max-evals", type=int, default=settings.exploit_max_evals,
+        help="optimizer candidate evaluations per explicit exploit target",
+    )
     args = parser.parse_args()
 
-    budget = {"explore": 0.90, "wildcard": 0.10, "exploit": 0.0} if args.explore_heavy else None
+    active_mode = "explore" if args.mode == "auto" else args.mode
+    budget = research_budget(active_mode)
     mem = get_memory()
     target = settings.supabase_url if settings.store == "supabase" else "local sqlite"
     print(f"store={settings.store} target={target} llm_backend={settings.llm_backend}")
@@ -55,7 +91,8 @@ def main() -> int:
         _book_summary(mem)
         return 0
 
-    llm = get_llm()  # one router/circuit survives every batch in this process
+    # Exploit is fully local and must not even initialize a subscription router.
+    llm = None if active_mode == "exploit" else get_llm()
     started = time.time()
     deadline = started + args.minutes * 60
     batch = 0
@@ -64,6 +101,7 @@ def main() -> int:
         run_id = f"R-{uuid.uuid4().hex[:8]}"
         summary = run_research(
             mem=mem, llm=llm, iterations=args.iterations, run_id=run_id, budget=budget,
+            exploit_max_evals=max(0, args.exploit_max_evals),
         )
         counts = mem.stats()["counts"]
         usage = summary.llm_usage
@@ -77,9 +115,25 @@ def main() -> int:
             flush=True,
         )
         if summary.provider_paused:
-            print(f"PROVIDER_PAUSED retry_after={summary.retry_after} reason={summary.stopped_reason}")
+            retry = summary.retry_after
+            resume_at = time.monotonic() + retry
+            print(f"PROVIDER_PAUSED retry_after={retry} reason={summary.stopped_reason}")
+            if args.mode == "auto":
+                print("AUTO_EXPLOIT local rescue started; no LLM calls", flush=True)
+                _auto_exploit(mem, deadline, resume_at)
+                remaining = max(0, int(resume_at - time.monotonic()))
+                if remaining == 0 and time.time() < deadline:
+                    continue
+                print(f"PROVIDER_PAUSED retry_after={remaining} reason=creative routes cooling down")
             _book_summary(mem)
             return 75
+        if summary.stopped_reason == "exploit backlog exhausted":
+            print("EXPLOIT_BACKLOG_EXHAUSTED")
+            break
+        if active_mode == "exploit" and summary.worker_runs == 0:
+            print(f"EXPLOIT_FAILED failures={summary.failures}")
+            _book_summary(mem)
+            return 1
 
     _book_summary(mem)
     return 0

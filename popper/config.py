@@ -41,6 +41,19 @@ class Settings(BaseSettings):
     llm_synthesis_route: str = "claude_cli:haiku,codex_cli:default"
     llm_synthesis_strong_route: str = "codex_cli:default,claude_cli:sonnet"
     llm_audit_route: str = "codex_cli:default,claude_cli:opus"
+    # Exploit engine: seed each run with previously-killed but rescuable specs
+    # (cost-killed and near-miss) loaded from shared memory. Without this the
+    # exploit budget can only refine what the SAME run happened to kill.
+    rescue_backlog: bool = True
+    rescue_backlog_limit: int = 200
+    rescue_backlog_band: float = 0.1
+    # explore | balanced | exploit | auto. Auto explores while subscriptions are
+    # available and runs one local rescue at a time during provider backoff.
+    research_mode: str = "auto"
+    auto_exploit_batch_size: int = 1
+    exploit_max_evals: int = 24
+    auto_exploit_max_evals: int = 1
+
     llm_batch_size: int = 10
     llm_provider_backoff_seconds: int = 300
     llm_rate_limit_backoff_seconds: int = 2700

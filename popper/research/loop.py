@@ -138,6 +138,10 @@ def evaluate(
         "verdict": v.type.value,
         "reasons": v.reasons,
         "status": _STATUS[v.type].value,
+        # per-gate glass box: which gates ran, their values and thresholds. The
+        # exploit selector needs it to tell an unmeasured sentinel from a real
+        # measurement (popper/orchestrator/selection.py).
+        "diagnostics": sc.diagnostics,
         "stats": {
             "pbo": sc.pbo,
             "deflated_sharpe": sc.deflated_sharpe,

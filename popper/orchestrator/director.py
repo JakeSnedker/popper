@@ -32,12 +32,25 @@ from popper.falsify import GauntletConfig
 from popper.memory import complete_scorecard, get_memory
 from popper.memory.map import edge_type
 from popper.orchestrator.convergence import cluster_status, update_cluster
+from popper.orchestrator.rescue import load_backlog, summarise
 from popper.orchestrator.selection import rank_targets
 from popper.research import anchor_experiment, evaluate
 
 DEFAULT_BUDGET = {"exploit": 0.70, "explore": 0.20, "wildcard": 0.10}
+RESEARCH_BUDGETS = {
+    "explore": {"exploit": 0.0, "explore": 0.90, "wildcard": 0.10},
+    "balanced": DEFAULT_BUDGET,
+    "exploit": {"exploit": 1.0, "explore": 0.0, "wildcard": 0.0},
+}
 K_DEAD = 2          # a category KILLing K times with no survivor is pruned dead (explore-side)
 SURVIVE = ("survive", "promote")
+
+
+def research_budget(mode: str) -> dict[str, float]:
+    """Return an isolated budget for one explicit operating mode."""
+    if mode not in RESEARCH_BUDGETS:
+        raise ValueError(f"unknown research mode: {mode}")
+    return dict(RESEARCH_BUDGETS[mode])
 
 
 def _candidates(c: dict) -> list:
@@ -235,7 +248,8 @@ def _explore(mem, llm, run_fn, period, cfg, wildcard: bool,
 
 
 def _worker_refine(mem, spec: StrategySpec, run_fn, period, cfg,
-                   run_id: str = "", iteration: int = 0, engine: str = "exploit"):
+                   run_id: str = "", iteration: int = 0, engine: str = "exploit",
+                   max_evals: int = 24):
     """A Worker (FULL view — sees its category's results, intentional tunnelling)
     refines one survivor via the guided local optimizer (roadmap B1) and
     re-falsifies. Records a new experiment/scorecard/verdict under the same
@@ -245,12 +259,25 @@ def _worker_refine(mem, spec: StrategySpec, run_fn, period, cfg,
     _ = view("worker", mem)  # the full view is the worker's grant (spec/02); read-through below
     from popper.falsify import judge  # local import avoids a heavy import at module load
     from popper.orchestrator.optimizer import optimize
-    best, _, _, history = optimize(spec, run_fn=run_fn, period=period, cfg=cfg)
+
+    def progress(move, index, total):
+        print(
+            f"[exploit {run_id}] {spec.id} evaluation {index}/{total}: {move}",
+            flush=True,
+        )
+
+    best, _, _, history = optimize(
+        spec, run_fn=run_fn, period=period, cfg=cfg,
+        max_iters=max_evals, progress=progress,
+    )
+    print(f"[exploit {run_id}] {spec.id} persisting best candidate", flush=True)
     variant = mem.add_spec(best.model_copy(update={"id": None, "name": f"{spec.name}_r"}))
     # ponytail: one extra judge of the winner so its anchor experiment persists
     # under the stored variant id (search candidates are judged memory-free)
     sc, v = judge(variant, run_fn=run_fn, period=period, cfg=cfg, mem=mem)
     sc.diagnostics["refine_kind"] = history[-1]["refine_kind"]  # book prefers wrapper_only
+    sc.diagnostics["refined_from_spec_id"] = spec.id
+    sc.diagnostics["optimizer"] = history[-1]
     exp = anchor_experiment(mem, variant.hypothesis_id, sc.experiment_id)
     h = mem.get_hypothesis(variant.hypothesis_id)
     bars = bars_for_spec(variant, period) if run_fn is run else None  # real regime score on the exploit path too
@@ -270,12 +297,32 @@ def _stored_spec(mem, hypothesis_id: str) -> StrategySpec:
     return StrategySpec(**mem.record(hypothesis_id)["specs"][0])
 
 
-async def _run(mem, llm, run_fn, period, cfg, iterations, budget, run_id: str) -> RunSummary:
+async def _run(mem, llm, run_fn, period, cfg, iterations, budget, run_id: str,
+               backlog_limit: int | None = None,
+               exploit_max_evals: int | None = None) -> RunSummary:
     s = RunSummary(iterations=iterations, run_id=run_id, budget_spent={k: 0 for k in budget})
     pending = {"explore": deque(), "wildcard": deque()}
     run_llm_mark = _llm_mark(llm)
     _event(mem, run_id, 0, "director", "director", "run", "running",
            f"starting research run with {iterations} iterations", payload={"budget": budget})
+
+    # Seed the exploit engine with everything the fleet has already killed but
+    # not disproven. Without it a high-exploit budget has no targets on a fresh
+    # process and quietly degrades into explore.
+    if settings.rescue_backlog and budget.get("exploit", 0) > 0:
+        try:
+            s.categories = load_backlog(
+                mem, cfg,
+                band=settings.rescue_backlog_band,
+                limit=(settings.rescue_backlog_limit
+                       if backlog_limit is None else backlog_limit),
+            )
+            _event(mem, run_id, 0, "director", "director", "rescue", "ok",
+                   "seeded exploit backlog from memory",
+                   payload=summarise(s.categories))
+        except Exception as exc:  # noqa: BLE001 - a cold backlog must not stop research.
+            _event(mem, run_id, 0, "director", "director", "rescue", "error",
+                   f"backlog unavailable: {type(exc).__name__}: {exc}")
 
     for i in range(1, iterations + 1):
         engine = _pick(budget, s.budget_spent)
@@ -284,6 +331,14 @@ async def _run(mem, llm, run_fn, period, cfg, iterations, budget, run_id: str) -
                f"selected {engine} engine", payload={"budget_spent": dict(s.budget_spent)})
         live = _live(s.categories, cfg)
 
+        if (engine == "exploit" and not live
+                and budget.get("explore", 0) <= 0
+                and budget.get("wildcard", 0) <= 0):
+            s.stopped_reason = "exploit backlog exhausted"
+            _event(mem, run_id, i, engine, "director", "backlog", "done",
+                   s.stopped_reason)
+            break
+
         if engine == "exploit" and live:
             # Workers fan out, one per live category, each refining that category's
             # TOP-RANKED still-UNREFINED target (survivor first, else a rescuable
@@ -291,8 +346,12 @@ async def _run(mem, llm, run_fn, period, cfg, iterations, budget, run_id: str) -
             # COUNT (race-prone under true parallel inserts); safe at 1 worker/category.
             targets = {et: _ranked_available(s.categories[et], cfg)[0]["spec"] for et in live}
             outcomes = await asyncio.gather(*[
-                asyncio.to_thread(_worker_refine, mem, targets[et],
-                                  run_fn, period, cfg, run_id, i, engine)
+                asyncio.to_thread(
+                    _worker_refine, mem, targets[et], run_fn, period, cfg,
+                    run_id, i, engine,
+                    (settings.exploit_max_evals
+                     if exploit_max_evals is None else exploit_max_evals),
+                )
                 for et in live], return_exceptions=True)
             for et, out in zip(live, outcomes):
                 # every ATTEMPTED target is exhausted (its local optimum is deterministic);
@@ -360,6 +419,9 @@ async def _run(mem, llm, run_fn, period, cfg, iterations, budget, run_id: str) -
             cat.setdefault("near_misses", []).append({
                 "spec": res["spec"], "metrics": metrics,
                 "verdict": res["verdict"], "reasons": res["summary"]["reasons"],
+                # the per-gate glass box: without it selection cannot tell an
+                # unmeasured sentinel from a measured failure (see selection.classify)
+                "diagnostics": res["summary"].get("diagnostics"),
                 # ponytail: SimpleNamespace exposes just the two fields classify() reads;
                 # swap for the real Scorecard if selection ever needs more of it.
                 "scorecard": SimpleNamespace(pbo=st["pbo"], parameter_stability=st["param_stability"]),
@@ -382,12 +444,19 @@ async def _run(mem, llm, run_fn, period, cfg, iterations, budget, run_id: str) -
 
 
 def run_research(mem=None, llm=None, run_fn=run, period=None, cfg: GauntletConfig | None = None,
-                 iterations: int = 10, budget: dict | None = None, run_id: str | None = None) -> RunSummary:
+                 iterations: int = 10, budget: dict | None = None, run_id: str | None = None,
+                 backlog_limit: int | None = None,
+                 exploit_max_evals: int | None = None) -> RunSummary:
     """Unattended research run. Injectable for offline/deterministic testing;
     defaults to the real alpha memory + Anthropic client + US30 runner."""
     from popper.agents import get_llm
     mem = mem or get_memory()
-    llm = llm or get_llm()
     budget = budget or dict(DEFAULT_BUDGET)
+    creative = budget.get("explore", 0) > 0 or budget.get("wildcard", 0) > 0
+    if llm is None and creative:
+        llm = get_llm()
     run_id = run_id or f"R-{uuid.uuid4().hex[:8]}"
-    return asyncio.run(_run(mem, llm, run_fn, period, cfg, iterations, budget, run_id))
+    return asyncio.run(_run(
+        mem, llm, run_fn, period, cfg, iterations, budget, run_id, backlog_limit,
+        exploit_max_evals,
+    ))
