@@ -36,8 +36,13 @@ class Settings(BaseSettings):
     llm_hypothesis_route: str = "claude_cli:sonnet,codex_cli:default,opencode_cli:deepseek"
     llm_hypothesis_strong_route: str = "codex_cli:default,claude_cli:sonnet"
     llm_wildcard_route: str = "codex_cli:default,opencode_cli:deepseek,claude_cli:opus"
-    llm_synthesis_route: str = "claude_cli:haiku,codex_cli:default"
-    llm_synthesis_strong_route: str = "codex_cli:default,claude_cli:sonnet"
+    # DeepSeek sits LAST on the synthesis routes on purpose. Measured on the same
+    # claim it produces a DSL-valid spec, but in 153s over two calls against 59s
+    # in one for claude:haiku -- so as a primary it would cut throughput ~2.6x.
+    # As a tail entry it costs nothing while the subscriptions are healthy and
+    # keeps research moving once they hit their reserve, which is the whole point.
+    llm_synthesis_route: str = "claude_cli:haiku,codex_cli:default,opencode_cli:deepseek"
+    llm_synthesis_strong_route: str = "codex_cli:default,claude_cli:sonnet,opencode_cli:deepseek"
     llm_audit_route: str = "codex_cli:default,claude_cli:opus"
     # Exploit engine: seed each run with previously-killed but rescuable specs
     # (cost-killed and near-miss) loaded from shared memory. Without this the

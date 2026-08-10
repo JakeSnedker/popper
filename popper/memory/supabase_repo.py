@@ -343,17 +343,23 @@ class SupabaseMemory(AlphaMemory):
         return q.order("updated_at", desc=True).limit(limit).execute().data
 
     def validated_equity_curves(self) -> list[list[float]]:
+        """Equity curves of SURVIVED/PROMOTED alphas — the correlation pool.
+
+        Filtered in Postgres, not here. Filtering client-side pulled EVERY
+        experiment's equity curve (~5 MB across 1.2k rows) to keep the one that
+        qualified, on every scorecard completion — slow enough to hit the
+        statement timeout and a steady drain on the egress quota.
+        """
         out, start, page = [], 0, 1000
         while True:
             batch = (
                 self.client.table("experiments").select(
                     "equity_curve, specs!inner(hypothesis_id, hypotheses!inner(status))"
-                ).range(start, start + page - 1).execute().data
+                )
+                .in_("specs.hypotheses.status", ["survived", "promoted"])
+                .range(start, start + page - 1).execute().data
             )
-            for row in batch:
-                status = row.get("specs", {}).get("hypotheses", {}).get("status")
-                if status in ("survived", "promoted") and row.get("equity_curve"):
-                    out.append(row["equity_curve"])
+            out.extend(row["equity_curve"] for row in batch if row.get("equity_curve"))
             if len(batch) < page:
                 break
             start += page

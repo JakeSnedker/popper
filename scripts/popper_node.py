@@ -628,6 +628,59 @@ def set_exploit(value: str) -> int:
     return 0
 
 
+def print_data(as_json: bool, search: bool) -> int:
+    """Report the market data this machine holds, and find copies it forgot about.
+
+    Bars are what research reads and what onboarding ships. Ticks are ~1.3 GB and
+    arrive separately, so "no ticks" is a normal, working state — not an error.
+    """
+    from popper.data.inventory import human, inspect, locate
+
+    configured = inspect(_dataset_dir())
+    payload: dict[str, Any] = {"configured": configured}
+    if search:
+        payload["found"] = [item for item in locate()
+                            if item["path"] != configured["path"]]
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0 if configured["research_ready"] else 1
+
+    print("\nPopper data inventory")
+    print("=" * 72)
+    print(f"Configured dataset: {configured['path']}")
+    if not configured["exists"]:
+        print("  MISSING - this directory does not exist.")
+    else:
+        print(f"  manifest: {'present' if configured['manifest'] else 'MISSING'}")
+        for timeframe, item in configured["bars"].items():
+            state = f"{item['files']} files, {human(item['bytes'])}" if item["present"] else "MISSING"
+            print(f"  bars/{timeframe:<4} {state}")
+        ticks = configured["ticks"]
+        detail = (f"{ticks['files']} files, {human(ticks['bytes'])}"
+                  if ticks["present"] else "not installed (optional)")
+        print(f"  ticks     {detail}")
+    print("-" * 72)
+    if configured["research_ready"]:
+        print("RESEARCH READY - bars and manifest are present.")
+        if not configured["ticks"]["present"]:
+            print("Ticks are not installed. Research does not need them; copy the tick")
+            print("archive into the dataset folder whenever it arrives.")
+    else:
+        print("NOT READY - bars or the manifest are missing.")
+        print("Extract the dataset archive so this path holds dataset-manifest.json")
+        print("and bars/M1, bars/M5, bars/M15.")
+
+    for item in payload.get("found", []):
+        print(f"\nAlso found: {item['path']}")
+        print(f"  bars complete: {item['bars_complete']} | "
+              f"ticks: {'yes' if item['ticks']['present'] else 'no'} "
+              f"({human(item['ticks']['bytes'])})")
+        print(f"  Point POPPER_DATASET_DIR at it, or move it into place.")
+    if search and not payload.get("found"):
+        print("\nNo other dataset copies found in the usual download locations.")
+    return 0 if configured["research_ready"] else 1
+
+
 def print_status(as_json: bool) -> int:
     paths = NodePaths.for_root(REPO_ROOT)
     state = status_snapshot(paths)
@@ -702,6 +755,13 @@ def main() -> int:
         help="sweep the shared backlog of hypotheses stranded between synthesis and verdict",
     )
 
+    data = commands.add_parser(
+        "data", help="report the market data on this machine (ticks are optional)",
+    )
+    data.add_argument("--json", action="store_true")
+    data.add_argument("--search", action="store_true",
+                      help="also scan the usual download folders for other copies")
+
     args = parser.parse_args()
     if args.command == "preflight":
         result = run_preflight(full_dataset=args.full_dataset)
@@ -722,6 +782,8 @@ def main() -> int:
         return set_switch(args.value)
     if args.command == "exploit":
         return set_exploit(args.value)
+    if args.command == "data":
+        return print_data(args.json, args.search)
     if args.command == "requeue":
         _run_requeue(NodePaths.for_root(REPO_ROOT))
         return 0
