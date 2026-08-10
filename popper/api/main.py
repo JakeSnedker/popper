@@ -2,7 +2,9 @@
 
 from collections import Counter, defaultdict
 from datetime import datetime
+from functools import wraps
 from statistics import fmean, median
+from time import monotonic
 from typing import Literal
 
 import numpy as np
@@ -99,6 +101,32 @@ def get_stats() -> dict:
     return get_memory().stats()
 
 
+def _cached(seconds: float):
+    """Serve a zero-argument endpoint from memory for `seconds`.
+
+    ponytail: one entry per decorated function, no eviction, no key -- these are
+    whole-dashboard snapshots, not a user-keyed cache. Process-local, so each
+    worker warms its own copy. If this ever needs per-user results or shared
+    state across workers, it needs a real cache, not a bigger version of this.
+    """
+    def decorate(fn):
+        cell: dict = {}
+
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            now = monotonic()
+            if "at" in cell and (now - cell["at"]) < seconds:
+                return cell["value"]
+            value = fn(*args, **kwargs)
+            cell["at"], cell["value"] = now, value
+            return value
+
+        wrapper.cache_clear = cell.clear  # type: ignore[attr-defined]
+        return wrapper
+
+    return decorate
+
+
 _GATE_ORDER = [
     "gate_signal_edge",
     "gate0_leakage",
@@ -191,9 +219,12 @@ def _failed_gate(diagnostics: dict, reasons: list[str]) -> str | None:
     return "other" if reasons else None
 
 
-def _test_rows(mem, hypotheses: list, attribution: dict) -> list[dict]:
+def _test_rows(mem, hypotheses: list, attribution: dict,
+               with_metrics: bool = True) -> list[dict]:
     rows = []
-    records = mem.analysis_records([hypothesis.id for hypothesis in hypotheses])
+    records = mem.analysis_records(
+        [hypothesis.id for hypothesis in hypotheses], with_metrics=with_metrics,
+    )
     for hypothesis in hypotheses:
         record = records.get(hypothesis.id, {})
         specs = {row["id"]: row for row in record.get("specs", [])}
@@ -285,15 +316,25 @@ def survivors() -> dict:
 
 
 @app.get("/api/analytics")
+@_cached(seconds=120)
 def analytics() -> dict:
     mem = get_memory()
     hypotheses = mem.list_hypotheses()
     attribution, events = _proposer_attribution(mem)
-    tests = _test_rows(mem, hypotheses, attribution)
+    # Aggregates below read verdicts, gates, categories and timings only — never
+    # per-test metrics — so the expensive raw_metrics blobs stay in the database.
+    tests = _test_rows(mem, hypotheses, attribution, with_metrics=False)
 
     outcomes = Counter(row["verdict"] for row in tests)
     passed = outcomes["survive"] + outcomes["promote"]
     tested_hypotheses = {row["hypothesis_id"] for row in tests}
+    # Two different questions, two different answers, both correct:
+    #   outcomes[...]  = passing VERDICTS ever recorded (history; a hypothesis
+    #                    that passed once and failed a later retest counts here)
+    #   current[...]   = hypotheses whose status is passing RIGHT NOW
+    # The dashboard funnel and the survivors page both show `current`, so
+    # analytics must publish it too or the three views look like they disagree.
+    current = Counter(hypothesis.status.value for hypothesis in hypotheses)
     durations = [row["duration_seconds"] for row in tests if row["duration_seconds"] is not None]
 
     categories = defaultdict(lambda: {
@@ -382,6 +423,11 @@ def analytics() -> dict:
             "promoted": outcomes["promote"],
             "pass_rate": round(100 * passed / len(tests), 2) if tests else 0.0,
             "fail_rate": round(100 * outcomes["kill"] / len(tests), 2) if tests else 0.0,
+            # Current status, not verdict history — matches the funnel + survivors page.
+            "current_survived": current["survived"],
+            "current_promoted": current["promoted"],
+            "current_passing": current["survived"] + current["promoted"],
+            "in_flight": current["proposed"] + current["testing"],
         },
         "test_duration": _duration_summary(durations),
         "stages": stages,
@@ -512,7 +558,16 @@ def _pca_2d(embeddings: list[list[float]]) -> list[tuple[float, float]]:
 
 
 @app.get("/api/map")
+@_cached(seconds=300)
 def get_map() -> dict:
+    """The alpha map. CACHED, because it is the single most expensive read in the
+    system and the dashboard polls it on a timer: every call pulls every
+    hypothesis WITH its 256-dim embedding (~3.3 MB from the database at 1.2k
+    hypotheses, 64% of it embeddings the PCA genuinely needs). Uncached at the
+    old 10s poll that is ~1.2 GB/hour of egress -- a free-tier month in four
+    hours, which is exactly how this project blew its quota. New hypotheses
+    arrive minutes apart at best, so a 2-minute-stale map costs nothing real.
+    """
     mem = get_memory()
     view = BlindView(mem)
     hyps = [h for h in mem.list_hypotheses() if h.embedding]

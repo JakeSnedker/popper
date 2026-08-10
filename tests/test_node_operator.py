@@ -1,5 +1,6 @@
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,11 +8,13 @@ from popper.node_operator import (
     NodeAlreadyRunning,
     NodeLock,
     NodePaths,
+    current_release,
     inspect_dataset,
     parse_retry_after,
     read_json,
     status_snapshot,
     write_json_atomic,
+    write_switch,
 )
 
 
@@ -46,6 +49,37 @@ def test_node_lock_recovers_a_stale_pid(tmp_path):
         assert lock_path.read_text(encoding="ascii") == str(os.getpid())
 
     assert not lock_path.exists()
+
+
+def test_release_identity_marks_a_modified_checkout_dirty(monkeypatch, tmp_path):
+    responses = iter([
+        SimpleNamespace(returncode=0, stdout="v1.2.3\n"),
+        SimpleNamespace(returncode=0, stdout=" M popper/agents/llm.py\n"),
+    ])
+    monkeypatch.setattr("popper.node_operator.subprocess.run", lambda *args, **kwargs: next(responses))
+
+    assert current_release(tmp_path) == "v1.2.3-dirty"
+
+
+def test_parked_worker_polls_remote_switch_until_resumed(monkeypatch, tmp_path):
+    from scripts import popper_node
+
+    paths = NodePaths.for_root(tmp_path)
+    paths.ensure()
+    write_switch(paths, "off")
+    syncs = []
+
+    def sync_remote(requested_paths):
+        syncs.append(1)
+        write_switch(requested_paths, "on")
+
+    monkeypatch.setattr(popper_node, "_sync_remote_switch", sync_remote)
+    monkeypatch.setattr(popper_node, "_update_state", lambda *args, **kwargs: {})
+    monkeypatch.setattr(popper_node, "_stop_requested", lambda _paths: False)
+
+    popper_node._wait_for_resume(paths)
+
+    assert syncs == [1]
 
 
 def test_provider_backoff_is_parsed_and_safely_bounded():
@@ -93,10 +127,15 @@ def test_heartbeat_payload_matches_node_status_migration(monkeypatch):
 
     from popper import node_presence
 
-    sql = (Path(__file__).parent.parent / "supabase" / "migrations"
-           / "0004_node_status.sql").read_text(encoding="utf-8")
-    block = sql.split("create table if not exists public.node_status (")[1].split(");")[0]
-    columns = set(re.findall(r"^\s*([a-z_]+)\s", block, re.M))
+    migrations = Path(__file__).parent.parent / "supabase" / "migrations"
+    columns = set()
+    for sql_path in sorted(migrations.glob("*.sql")):
+        sql = sql_path.read_text(encoding="utf-8")
+        if "create table if not exists public.node_status (" in sql:
+            block = sql.split("create table if not exists public.node_status (")[1].split(");")[0]
+            columns.update(re.findall(r"^\s*([a-z_]+)\s", block, re.M))
+        # Later migrations may add columns to node_status via alter table.
+        columns.update(re.findall(r"add column if not exists (\w+)", sql))
 
     sent: list[dict] = []
 

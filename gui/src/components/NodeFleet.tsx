@@ -1,10 +1,13 @@
+import { useState } from "react";
 import { api } from "../api";
+import type { FleetNode } from "../lib/types";
 import { useAsync } from "../lib/useAsync";
+import { useAuth } from "./AuthGate";
 import { EmptyState, ErrorState, LoadingRows } from "./States";
 
 // The only place an operator can see whether the OTHER machines are alive.
 // Local status answers "is my node running"; this answers "is the team running".
-const OK_STATES = new Set(["running", "researching", "idle", "starting", "smoke_test"]);
+const OK_STATES = new Set(["running", "researching", "idle", "starting", "smoke_test", "parked"]);
 
 function age(seconds: number | null): string {
   if (seconds === null) return "never";
@@ -19,6 +22,52 @@ function tone(node: { healthy: boolean; status: string }): string {
   if (node.status.endsWith("backoff")) return "bg-amber-500";
   if (node.status === "crashed") return "bg-rose-500";
   return "bg-slate-600";
+}
+
+function SwitchToggle({
+  node,
+  onDone,
+}: {
+  node: FleetNode;
+  onDone: () => void;
+}) {
+  const { canWrite } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Only non-viewers can toggle; the API/repo enforce the per-operator scope.
+  const enabled = canWrite && node.can_toggle;
+  const on = node.switch === "on";
+
+  async function toggle() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.setNodeSwitch(node.machine_id, on ? "off" : "on");
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1 shrink-0">
+      <button
+        onClick={toggle}
+        disabled={!enabled || busy}
+        title={enabled ? (on ? "Park this node after the current hunt" : "Resume this node") : "Read-only in viewer mode"}
+        className={`inline-flex items-center gap-2 rounded-full px-2 py-1 text-[10px] font-semibold transition ${
+          enabled ? "hover:brightness-125 cursor-pointer" : "cursor-not-allowed opacity-40"
+        } ${on ? "bg-emerald-600/20 text-emerald-300" : "bg-slate-700 text-slate-300"}`}
+      >
+        <span className={`w-2 h-2 rounded-full ${on ? "bg-emerald-400" : "bg-slate-400"}`} />
+        {busy ? "..." : on ? "ON" : "OFF"}
+      </button>
+      {error && <span className="text-[9px] text-rose-400">{error}</span>}
+    </div>
+  );
 }
 
 export function NodeFleet() {
@@ -59,6 +108,7 @@ export function NodeFleet() {
               )}
             </div>
             <span className="pill bg-ink-700 text-slate-300 shrink-0">{node.status}</span>
+            <SwitchToggle node={node} onDone={reload} />
             <span className="text-[10px] text-slate-500 shrink-0 w-16 text-right">
               {age(node.seconds_since_heartbeat)}
             </span>

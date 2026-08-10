@@ -14,3 +14,22 @@ import pytest
 @pytest.fixture(autouse=True)
 def _api_auth_off(monkeypatch):
     monkeypatch.setattr("popper.security.auth.settings.auth_required", False, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _clear_endpoint_caches():
+    """Drop the API's TTL response caches around every test.
+
+    /api/map and /api/analytics are cached for minutes because they are the
+    expensive reads that blew the database egress quota. That cache is
+    process-local and outlives a test's swapped-in memory, so without this a
+    test asserts on the PREVIOUS test's dashboard.
+    """
+    from popper.api import main
+
+    cached = [fn for fn in vars(main).values() if hasattr(fn, "cache_clear")]
+    for fn in cached:
+        fn.cache_clear()
+    yield
+    for fn in cached:
+        fn.cache_clear()

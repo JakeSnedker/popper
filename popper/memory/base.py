@@ -67,8 +67,13 @@ class AlphaMemory(ABC):
     @abstractmethod
     def record(self, hypothesis_id: str) -> dict: ...
 
-    def analysis_records(self, hypothesis_ids: list[str]) -> dict[str, dict]:
-        """Bulk read used by aggregate reporting; network stores should override."""
+    def analysis_records(self, hypothesis_ids: list[str],
+                         with_metrics: bool = True) -> dict[str, dict]:
+        """Bulk read used by aggregate reporting; network stores should override.
+
+        `with_metrics` is a hint a local store can ignore — reading a column off
+        disk is free here, and it is the network round trip that pays for it.
+        """
         return {hypothesis_id: self.record(hypothesis_id) for hypothesis_id in hypothesis_ids}
 
     @abstractmethod

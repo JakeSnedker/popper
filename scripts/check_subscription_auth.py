@@ -1,15 +1,17 @@
-"""Report which official subscription CLIs this node is signed in to.
+"""Report which zero-marginal-cost LLM routes this node can use.
 
-Popper configures itself from whatever the operator owns: both Claude.ai and
-ChatGPT gives Claude-led routing with Codex as the fallback, one subscription
-gives a working single-provider node. Exit 1 only when nothing is authenticated.
-No tokens are printed.
+Claude and Codex use official subscription OAuth; OpenCode contributes its free
+hosted DeepSeek model. Exit 1 only when no route is available. No tokens print.
 """
 
 from popper.agents.llm import enabled_providers
 from popper.agents.subscriptions import probe
 
-_LABELS = {"claude_cli": "Claude (claude.ai)", "codex_cli": "OpenAI (ChatGPT via Codex)"}
+_LABELS = {
+    "claude_cli": "Claude (claude.ai)",
+    "codex_cli": "OpenAI (ChatGPT via Codex)",
+    "opencode_cli": "DeepSeek (free via OpenCode)",
+}
 
 
 def main() -> int:
@@ -19,10 +21,7 @@ def main() -> int:
         print(f"{_LABELS[provider]}: {marker} - {reason}")
 
     active = sorted(enabled_providers())  # raises if nothing usable is configured
-    if len(active) > 1:
-        print("\nRouting: Claude leads, Codex is the fallback.")
-    else:
-        print(f"\nRouting: single-provider node on {active[0]}; every role uses it.")
+    print("\nActive routing providers: " + ", ".join(active))
     return 0
 
 

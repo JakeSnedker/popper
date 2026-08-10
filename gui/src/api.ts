@@ -6,7 +6,6 @@ import type {
   HypothesisRecord,
   Hypothesis,
   FeatureGap,
-  FleetNode,
   MapResponse,
   MonteCarloCone,
   MonteCarloDiagnosticResult,
@@ -19,6 +18,7 @@ import type {
   SurvivorTest,
   TimelinePoint,
   VerdictFeedItem,
+  FleetResponse,
 } from "./lib/types";
 
 async function authorizedFetch(url: string, init?: RequestInit): Promise<Response> {
@@ -104,7 +104,12 @@ export const api = {
     ),
   downloadForge: (id: string) =>
     download(`/api/hypotheses/${encodeURIComponent(id)}/forge-download`),
-  fleet: () => get<{ nodes: FleetNode[]; healthy: number; error: string | null }>("/api/fleet"),
+  fleet: () => get<FleetResponse>("/api/fleet"),
+  setNodeSwitch: (machineId: string, switchVal: "on" | "off") =>
+    post<{ machine_id: string; switch: string; ok: boolean }>(
+      `/api/fleet/${encodeURIComponent(machineId)}/switch`,
+      { switch: switchVal }
+    ),
   verdicts: (limit = 20) => get<{ verdicts: VerdictFeedItem[] }>(`/api/verdicts?limit=${limit}`),
   timeline: (id: string) =>
     get<{ experiments: TimelinePoint[] }>(`/api/timeline?hypothesis_id=${encodeURIComponent(id)}`),

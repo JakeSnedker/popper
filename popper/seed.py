@@ -2,6 +2,12 @@
 
 So the dashboard opens with a populated happy-path on day one. Idempotent-ish: it appends,
 so run against a fresh DB (delete popper.db first) for clean numbers.
+
+DEMO DATA ONLY. These five fixtures were once seeded into the production Supabase
+memory, where nothing distinguished them from research output: two of them held
+promoted/survived status with zero gate evidence and read as validated alphas on
+the dashboard, and two more sat in the untested backlog forever. Seeding now
+refuses to touch a shared store — see `seed()`.
 """
 
 from popper.artifacts import (
@@ -14,6 +20,7 @@ from popper.artifacts import (
     Verdict,
     VerdictType,
 )
+from popper.config import settings
 from popper.memory import get_memory
 
 
@@ -35,7 +42,17 @@ def _spec(hyp_id: str, name: str, *, universe=None, timeframe="5m", features=Non
     )
 
 
-def seed() -> None:
+def seed(force: bool = False) -> None:
+    # A shared store is the team's evidence base. Demo fixtures there are not a
+    # cosmetic problem: they are indistinguishable from real results, and the two
+    # that carried a passing status made the dashboard claim three validated
+    # alphas when there was one. Keep examples and live research in separate stores.
+    if settings.store != "sqlite" and not force:
+        raise RuntimeError(
+            f"refusing to seed demo data into the {settings.store!r} store - it would be "
+            "indistinguishable from real research. Seed a local sqlite store instead "
+            "(POPPER_STORE=sqlite), or pass force=True if you really mean it."
+        )
     mem = get_memory()
 
     # 1) PROMOTED — survived everything, now live

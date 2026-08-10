@@ -78,7 +78,10 @@ function Tooltip({ p }: { p: Placed }) {
 }
 
 export function AlphaMap({ onSelect }: { onSelect: (id: string) => void }) {
-  const { data, loading, error, reload } = useAsync(() => api.map(), [], 10000);
+  // 60s, not 10s: /api/map is the heaviest read in the system (every hypothesis
+  // WITH its embedding, ~3.3 MB from the database). The server caches it for 5
+  // minutes, so polling faster buys staler-or-equal data at more load.
+  const { data, loading, error, reload } = useAsync(() => api.map(), [], 60000);
   const [hover, setHover] = useState<Placed | null>(null);
   const [filter, setFilter] = useState<MapFilter>("all");
   const placed = useMemo(() => (data ? place(data.points) : []), [data]);
@@ -117,7 +120,7 @@ export function AlphaMap({ onSelect }: { onSelect: (id: string) => void }) {
           );
         })}
         <span className="ml-auto text-[10px] font-mono text-slate-600">
-          showing {visible.length} · 2D PCA · auto-refresh 10s
+          showing {visible.length} · 2D PCA · auto-refresh 60s
         </span>
       </div>
 

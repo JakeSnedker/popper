@@ -30,6 +30,7 @@ class NodePaths:
     stop_file: Path
     node_log: Path
     hunt_log: Path
+    switch_file: Path
 
     @classmethod
     def for_root(cls, root: Path = REPO_ROOT) -> "NodePaths":
@@ -48,6 +49,7 @@ class NodePaths:
             stop_file=state_dir / "stop.requested",
             node_log=logs_dir / "node.jsonl",
             hunt_log=logs_dir / "hunt.log",
+            switch_file=state_dir / "switch",
         )
 
     def ensure(self) -> None:
@@ -165,9 +167,20 @@ def current_release(root: Path = REPO_ROOT) -> str | None:
             timeout=10,
         )
         if tagged.returncode == 0 and tagged.stdout.strip():
-            return tagged.stdout.strip()
-        commit = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
+            identity = tagged.stdout.strip()
+        else:
+            commit = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if commit.returncode != 0 or not commit.stdout.strip():
+                return None
+            identity = commit.stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
             cwd=root,
             capture_output=True,
             text=True,
@@ -175,7 +188,9 @@ def current_release(root: Path = REPO_ROOT) -> str | None:
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
-    return commit.stdout.strip() if commit.returncode == 0 and commit.stdout.strip() else None
+    if status.returncode != 0:
+        return None
+    return f"{identity}-dirty" if status.stdout.strip() else identity
 
 
 def inspect_dataset(dataset_dir: Path, expected_id: str) -> dict[str, Any]:
@@ -203,6 +218,30 @@ def inspect_dataset(dataset_dir: Path, expected_id: str) -> dict[str, Any]:
         "total_size_bytes": manifest.get("total_size_bytes"),
         "manifest": str(manifest_path),
     }
+
+
+def read_switch(paths: NodePaths) -> str:
+    """Return 'on' or 'off'. A missing switch file defaults to 'on'.
+
+    The switch is how a human lets the flock run (on) or parks it when they
+    need the computer for their own work (off). It is durable and survives
+    process restarts — unlike the transient stop.requested token.
+    """
+    try:
+        value = paths.switch_file.read_text(encoding="ascii").strip().lower()
+    except OSError:
+        return "on"
+    return value if value in {"on", "off"} else "on"
+
+
+def write_switch(paths: NodePaths, value: str) -> None:
+    if value not in {"on", "off"}:
+        raise ValueError(f"switch must be 'on' or 'off', got {value!r}")
+    paths.switch_file.write_text(value, encoding="ascii")
+
+
+def clear_stop(paths: NodePaths) -> None:
+    paths.stop_file.unlink(missing_ok=True)
 
 
 def status_snapshot(paths: NodePaths) -> dict[str, Any]:

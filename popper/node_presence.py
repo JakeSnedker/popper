@@ -65,6 +65,8 @@ def publish(state: dict[str, Any], force: bool = False) -> str | None:
         "status": str(state.get("status") or "unknown"),
         "release_id": settings.release_id,
         "dataset_id": settings.dataset_id,
+        "switch": str(state.get("switch") or "on"),
+        "switch_requested_at": state.get("switch_requested_at"),
         "last_error": state.get("last_error"),
         "started_at": state.get("started_at"),
         "heartbeat_at": _now(),
@@ -103,12 +105,45 @@ def fleet(stale_after_seconds: int = 300) -> list[dict[str, Any]]:
         except (TypeError, ValueError):
             age = None
         row["seconds_since_heartbeat"] = None if age is None else int(age)
+        row["switch"] = str(row.get("switch") or "on")
         row["healthy"] = (
             age is not None
             and age <= stale_after_seconds
             and str(row.get("status")) not in {"stopped", "crashed", "unknown"}
         )
     return rows
+
+
+def set_switch(machine_id: str, value: str) -> str | None:
+    """Toggle an operator's own (or, for admins, any) node switch via the
+    security-definer RPC. Returns an error string, or None on success.
+    """
+    if not enabled():
+        return None
+    if value not in {"on", "off"}:
+        return f"switch must be on or off, got {value!r}"
+    try:
+        _get_client().rpc(
+            "popper_set_node_switch",
+            {"p_machine_id": machine_id, "p_switch": value},
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 - never let a toggle 500 the dashboard
+        return f"{type(exc).__name__}: {' '.join(str(exc).split())[:300]}"
+    return None
+
+
+def read_node_switch(machine_id: str) -> str | None:
+    """The current remote switch for one machine (None if unknown)."""
+    if not enabled():
+        return None
+    try:
+        rows = (
+            _get_client().table("node_status")
+            .select("switch").eq("machine_id", machine_id).execute().data
+        )
+    except Exception:  # noqa: BLE001 - best-effort mirroring
+        return None
+    return rows[0]["switch"] if rows else None
 
 
 def demo() -> None:

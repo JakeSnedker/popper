@@ -427,6 +427,12 @@ export interface AnalyticsResponse {
     promoted: number;
     pass_rate: number;
     fail_rate: number;
+    // Current status (matches the funnel + survivors page). `survived`/`promoted`
+    // above count passing verdicts ever recorded, which can be higher after a retest.
+    current_survived: number;
+    current_promoted: number;
+    current_passing: number;
+    in_flight: number;
   };
   test_duration: DurationSummary;
   stages: (DurationSummary & {
@@ -477,6 +483,21 @@ export interface FleetNode {
   heartbeat_at: string;
   seconds_since_heartbeat: number | null;
   healthy: boolean;
+  switch: "on" | "off";
+  can_toggle: boolean;
+  operator_id?: string;
+}
+
+export interface FleetMe {
+  role: string;
+  user_id: string;
+}
+
+export interface FleetResponse {
+  nodes: FleetNode[];
+  healthy: number;
+  me: FleetMe;
+  error: string | null;
 }
 
 // app navigation

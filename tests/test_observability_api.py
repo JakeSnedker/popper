@@ -123,13 +123,17 @@ def test_map_points_categories_whitespace(client):
 
 
 def test_map_degenerate_cases(monkeypatch):
+    from popper.api.main import get_map
+
     empty = _mem()
     monkeypatch.setattr(popper.memory, "_instance", empty)
+    get_map.cache_clear()  # /api/map is TTL-cached; this test swaps the store under it
     assert TestClient(app).get("/api/map").json()["points"] == []
 
     single = _mem()
     single.add_hypothesis(Hypothesis(claim="one lonely idea", mechanism="x"))
     monkeypatch.setattr(popper.memory, "_instance", single)
+    get_map.cache_clear()
     (point,) = TestClient(app).get("/api/map").json()["points"]
     assert point["x"] == 0.0 and point["y"] == 0.0
 
@@ -199,6 +203,12 @@ def test_analytics_and_survivors_are_honest_about_coverage(client):
         "promoted": 0,
         "pass_rate": 33.33,
         "fail_rate": 66.67,
+        # Verdict history vs current status: these coincide here because nothing
+        # has been re-tested, and they are what the funnel/survivors pages show.
+        "current_survived": 1,
+        "current_promoted": 0,
+        "current_passing": 1,
+        "in_flight": 1,
     }
     failures = {row["key"]: row["count"] for row in body["failure_gates"]}
     assert failures == {"gate3_mc_ruin": 1, "gate4_multiple_testing": 1}

@@ -31,7 +31,7 @@ provider quota/429/5xx/CLI failure
   -> outer worker sleeps before starting another process
 ```
 
-## Subscription providers
+## Zero-marginal-cost providers
 
 `claude_cli` runs the official `claude -p` command using Claude subscription OAuth.
 It strips Anthropic API keys, replaces the default system prompt, disables tools and
@@ -40,6 +40,11 @@ session persistence, uses safe mode, and requests JSON telemetry.
 `codex_cli` runs the official `codex exec` command using the signed-in ChatGPT
 subscription. It executes ephemerally from the OS temp directory, ignores user/project
 rules, uses a read-only sandbox, and emits JSONL telemetry.
+
+`opencode_cli` runs only `opencode/deepseek-v4-flash-free`. Popper gives it an
+isolated temporary config/data/cache/state root, a no-tools agent, no parent project
+instructions, and no Anthropic, OpenAI, NVIDIA, DeepSeek, GLM or OpenRouter API keys.
+The temporary session is deleted after each call. Paid OpenCode models fail closed.
 
 No browser cookies, web-session tokens, or unofficial authentication are used.
 A ChatGPT subscription is used only through the official Codex CLI. Before every
@@ -52,16 +57,17 @@ Check this machine before a run:
 ```powershell
 claude auth status
 codex login status
+opencode models opencode
 ```
 
-Claude should report `claude.ai`; Codex must report ChatGPT rather than an API key for
-zero-marginal-cost subscription routing.
+Claude should report `claude.ai`; Codex must report ChatGPT rather than an API key;
+and OpenCode must list `opencode/deepseek-v4-flash-free`.
 
 ## Backends
 
 | `POPPER_LLM_BACKEND` | Behavior |
 |---|---|
-| `subscriptions` | Role routes across official Claude.ai and ChatGPT/Codex logins |
+| `subscriptions` | Role routes across Claude.ai, ChatGPT/Codex, and free OpenCode DeepSeek (legacy backend name) |
 | `cli` | Claude subscription only; compatibility/fallback mode |
 
 ## Route syntax
@@ -76,14 +82,15 @@ Supported providers:
 
 - `claude_cli`
 - `codex_cli`
+- `opencode_cli` (alias `deepseek` resolves only to `opencode/deepseek-v4-flash-free`)
 
-Local LLMs and metered APIs are deliberately not selectable in this version. Each
-operator supplies capacity by logging into the two official subscription CLIs. Unknown
-providers fail configuration immediately.
+Local LLMs and metered APIs are deliberately not selectable through OpenCode. Unknown
+providers and non-approved OpenCode models fail before a process is launched.
 
-The defaults use round-robin Claude/Codex generation for provider diversity, a smaller
-Claude model for first-pass Synthesis, and strong-provider escalation only after
-deterministic failure.
+The defaults rotate hypothesis generation across Claude, Codex, and DeepSeek when all
+three are available. Synthesis and strong/audit routes retain their existing provider
+ordering. A persistent Claude reserve stops node use after 60 calls in a rolling five-hour
+window, while Codex/DeepSeek remain available.
 See `.env.example` for every route.
 
 ## Telemetry
@@ -100,8 +107,8 @@ Each real provider call records:
 Telemetry is attached to `research_events`, aggregated into `RunSummary.llm_usage`,
 returned by `POST /api/research`, and printed by `scripts/run_hunt.py`.
 
-Subscription CLIs may report token counts differently over time. A missing count is
-stored as zero rather than estimated.
+CLIs may report token counts differently over time. A missing count is stored as zero
+rather than estimated.
 
 ## Model benchmarking
 
@@ -111,6 +118,7 @@ Never infer model quality from parser tests. Run the no-persistence canary:
 .venv\Scripts\python.exe scripts\benchmark_llm_routes.py `
   --route claude=claude_cli:sonnet `
   --route openai=codex_cli:default `
+  --route deepseek=opencode_cli:deepseek `
   --task hypothesis --samples 3 --batch-size 5 `
   --output route-benchmark.json
 ```

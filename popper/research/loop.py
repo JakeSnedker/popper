@@ -25,7 +25,7 @@ from pathlib import Path
 
 import yaml
 
-from popper.artifacts import ExperimentResult, Hypothesis, StrategySpec
+from popper.artifacts import ExperimentResult, Hypothesis, Scorecard, StrategySpec, Verdict
 from popper.artifacts.enums import HypothesisStatus, VerdictType
 from popper.dsl import DSLValidationError, validate_spec
 from popper.dsl.validator import validate_local_data_context
@@ -111,19 +111,9 @@ def evaluate(
     spec.hypothesis_id = h.id
     spec = mem.add_spec(spec)
 
-    mem.set_status(h.id, HypothesisStatus.TESTING)
-    sc, v = judge(spec, run_fn=run_fn, period=period, cfg=cfg, mem=mem, bars=bars, costs=costs)
-
-    exp = anchor_experiment(mem, h.id, sc.experiment_id)
-    if bars is None and run_fn is run:
-        from popper.experiments.runner import bars_for_spec
-        bars = bars_for_spec(spec, period)  # real bars -> C3 regime conditioning (cache hit)
-    complete_scorecard(sc, mem, h, exp, bars=bars)  # novelty/correlation/regime/behaviour in place
-    sc = mem.add_scorecard(sc)
-    v = mem.add_verdict(v)
-
-    mem.set_status(h.id, _STATUS[v.type])
-    mem.set_behaviour(h.id, sc.behaviour_signature)
+    sc, v, exp = falsify_stored(
+        h, spec, mem, period=period, cfg=cfg, run_fn=run_fn, bars=bars, costs=costs,
+    )
 
     m = exp.raw_metrics
     pf = m.get("profit_factor", 0.0)
@@ -157,6 +147,47 @@ def evaluate(
             "expected_edge": round(calculate_edge(min(pf, 5.0), m.get("trades_n", 0)), 2),
         },
     }
+
+
+def falsify_stored(
+    h: Hypothesis,
+    spec: StrategySpec,
+    mem,
+    period: tuple[str, str] | None = None,
+    cfg: GauntletConfig | None = None,
+    run_fn=run,
+    bars=None,
+    costs: dict | None = None,
+) -> tuple[Scorecard, Verdict, ExperimentResult]:
+    """Run the gauntlet over an ALREADY-STORED hypothesis+spec and record the outcome.
+
+    Split out of `evaluate` so a re-test never re-inserts the hypothesis or spec —
+    `popper requeue` needs exactly this half for work that is already in memory.
+    """
+    mem.set_status(h.id, HypothesisStatus.TESTING)
+    # TESTING is a claim on the hypothesis, not an outcome. If the gauntlet raises
+    # (provider outage, bad data, operator Ctrl-C) the claim must be released, or
+    # the hypothesis is stranded: nothing re-tests a TESTING row, and the director
+    # only ever proposes new ones. Releasing to PROPOSED keeps it re-runnable.
+    # A hard kill (SIGKILL/power loss) still strands one row — `popper requeue`
+    # sweeps those.
+    try:
+        sc, v = judge(spec, run_fn=run_fn, period=period, cfg=cfg, mem=mem, bars=bars, costs=costs)
+
+        exp = anchor_experiment(mem, h.id, sc.experiment_id)
+        if bars is None and run_fn is run:
+            from popper.experiments.runner import bars_for_spec
+            bars = bars_for_spec(spec, period)  # real bars -> C3 regime conditioning (cache hit)
+        complete_scorecard(sc, mem, h, exp, bars=bars)  # novelty/correlation/regime/behaviour in place
+        sc = mem.add_scorecard(sc)
+        v = mem.add_verdict(v)
+    except BaseException:  # noqa: BLE001 - re-raised; includes KeyboardInterrupt
+        mem.set_status(h.id, HypothesisStatus.PROPOSED)
+        raise
+
+    mem.set_status(h.id, _STATUS[v.type])
+    mem.set_behaviour(h.id, sc.behaviour_signature)
+    return sc, v, exp
 
 
 def anchor_experiment(mem, hypothesis_id: str, experiment_id: str) -> ExperimentResult:

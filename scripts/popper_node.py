@@ -25,9 +25,11 @@ from popper.node_operator import (
     parse_retry_after,
     process_exists,
     read_json,
+    read_switch,
     status_snapshot,
     utc_now,
     write_json_atomic,
+    write_switch,
 )
 
 
@@ -115,8 +117,8 @@ def _check_subscriptions() -> str:
     )
     safe = " | ".join(line.strip() for line in result.stdout.splitlines() if line.strip())
     if result.returncode != 0:
-        raise RuntimeError(safe or "no subscription CLI is authenticated on this machine")
-    return safe or "subscription routing is available"
+        raise RuntimeError(safe or "no zero-marginal-cost LLM route is available")
+    return safe or "LLM routing is available"
 
 
 def _check_supabase() -> str:
@@ -147,7 +149,7 @@ def run_preflight(full_dataset: bool = False) -> dict[str, Any]:
         _check("Configuration", _check_config),
         _check("Release", _check_release),
         _check("Dataset", lambda: _check_dataset(full_dataset)),
-        _check("Subscriptions", _check_subscriptions),
+        _check("LLM providers", _check_subscriptions),
         _check("Supabase", _check_supabase),
         _check("Dashboard", _check_frontend),
     ]
@@ -203,14 +205,55 @@ def _stop_requested(paths: NodePaths) -> bool:
     return paths.stop_file.exists()
 
 
-def _wait_for_backoff(paths: NodePaths, seconds: int) -> bool:
+def _switch_on(paths: NodePaths) -> bool:
+    return read_switch(paths) == "on"
+
+
+def _sync_remote_switch(paths: NodePaths) -> None:
+    """Mirror the shared fleet switch for THIS machine into the local switch
+    file, so a GUI toggle on another computer takes effect here.
+
+    Local CLI toggles write the file first, then publish their switch to the
+    fleet, so the remote value is the shared source of truth. We only adopt a
+    remote value that read_node_switch actually returned (a missing remote row
+    means this node has not reported yet; leave the local file alone).
+    """
+    value = node_presence.read_node_switch(settings.machine_id) if node_presence.enabled() else None
+    if value in {"on", "off"} and value != read_switch(paths):
+        write_switch(paths, value)
+        append_node_log(paths, "switch_sync", f"Adopted remote switch {value}")
+
+
+def _wait_until_allowed(paths: NodePaths, seconds: int) -> bool:
+    """Sleep up to `seconds`, exiting early if the node is told to stop.
+
+    While the switch is off we still publish heartbeats so the fleet sees the
+    node is alive but parked. Returns False only when a hard stop is requested.
+    """
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         if _stop_requested(paths):
             return False
-        _update_state(paths, heartbeat_at=utc_now())
+        _update_state(paths, heartbeat_at=utc_now(), parked=not _switch_on(paths))
         time.sleep(min(5, max(0.1, deadline - time.monotonic())))
     return True
+
+
+def _wait_for_backoff(paths: NodePaths, seconds: int) -> bool:
+    return _wait_until_allowed(paths, seconds)
+
+
+def _wait_for_resume(paths: NodePaths) -> None:
+    """Block the worker while parked, publishing heartbeats, until the switch
+    is back on. A hard stop breaks the outer loop independently of this call.
+    """
+    while _stop_requested(paths) is False:
+        _sync_remote_switch(paths)
+        _update_state(paths, heartbeat_at=utc_now(), parked=True)
+        if _switch_on(paths):
+            append_node_log(paths, "switch_on", "Node resumed by user switch")
+            return
+        time.sleep(5)
 
 
 def _terminate_tree(pid: int, force: bool = True) -> None:
@@ -266,6 +309,25 @@ def run_worker(minutes: float, iterations: int, mode: str,
             return 0
 
         while not _stop_requested(paths):
+            # Adopt any remote (GUI) switch change for this machine.
+            _sync_remote_switch(paths)
+            if not _switch_on(paths):
+                # Node is parked: keep the process alive and heartbeating but
+                # do not launch any hunt (no new LLM calls) until switch is on.
+                parked_since = read_json(paths.state_file).get("parked_at")
+                _update_state(
+                    paths,
+                    publish=True,
+                    status="parked",
+                    parked=True,
+                    child_pid=None,
+                    parked_at=parked_since or utc_now(),
+                    heartbeat_at=utc_now(),
+                )
+                # Wait for the switch to turn back on (unbounded), or a hard stop.
+                _wait_for_resume(paths)
+                continue
+
             command = [
                 sys.executable,
                 str(REPO_ROOT / "scripts" / "run_hunt.py"),
@@ -290,21 +352,35 @@ def run_worker(minutes: float, iterations: int, mode: str,
                     publish=True,
                     status="researching",
                     child_pid=child.pid,
+                    parked=False,
+                    parked_at=None,
                     heartbeat_at=utc_now(),
                 )
                 while child.poll() is None:
+                    _sync_remote_switch(paths)
                     if _stop_requested(paths):
                         _update_state(paths, publish=True, status="stopping", heartbeat_at=utc_now())
                         _terminate_tree(child.pid)
                         child.wait(timeout=30)
                         break
+                    if not _switch_on(paths):
+                        # Park after this hunt finishes rather than terminating
+                        # it mid-run, so no prompt work is lost. The outer loop
+                        # gate then holds the node parked until switched back on.
+                        _update_state(paths, publish=True, status="parked", parked=True, heartbeat_at=utc_now())
+                        child.wait()
+                        append_node_log(paths, "switch_off", "Hunt finished; node parked by user switch")
+                        child = None
+                        break
                     _update_state(paths, heartbeat_at=utc_now())
                     time.sleep(5)
-                return_code = child.poll()
+                return_code = child.poll() if child is not None else 0
                 child = None
 
             if _stop_requested(paths):
                 break
+            if not _switch_on(paths):
+                continue
             if return_code == 0:
                 append_node_log(paths, "hunt_complete", "Research window completed")
                 _update_state(
@@ -466,11 +542,31 @@ def stop_node(timeout: int, force: bool) -> int:
     return 0
 
 
+def set_switch(value: str) -> int:
+    """Persist the operator on/off switch. OFF lets the current hunt finish,
+    then parks the node so it stops making LLM calls until switched back on.
+    """
+    paths = NodePaths.for_root(REPO_ROOT)
+    paths.ensure()
+    write_switch(paths, value)
+    append_node_log(paths, "switch_set", f"Operator switch set to {value}")
+    # Publish to the shared fleet so the dashboard (and other machines) see it,
+    # and so a remote worker that re-syncs stays in lockstep.
+    error = node_presence.set_switch(settings.machine_id, value)
+    _update_state(paths, publish=True, switch=value, switch_requested_at=utc_now())
+    print(f"Popper switch is now {value.upper()}.")
+    if value == "off":
+        print("Current hunt will finish; no new hunts will start until it is turned back on.")
+    if error:
+        print(f"Note: fleet sync reported: {error}")
+    return 0
+
+
 def print_status(as_json: bool) -> int:
     paths = NodePaths.for_root(REPO_ROOT)
     state = status_snapshot(paths)
     preflight = read_json(paths.preflight_file)
-    value = {**state, "preflight_ok": preflight.get("ok"), "paths": {
+    value = {**state, "switch": read_switch(paths), "preflight_ok": preflight.get("ok"), "paths": {
         "state": str(paths.state_file),
         "node_log": str(paths.node_log),
         "hunt_log": str(paths.hunt_log),
@@ -486,6 +582,7 @@ def print_status(as_json: bool) -> int:
     print(f"Machine:     {value.get('machine_id') or settings.machine_id or '-'}")
     print(f"Release:     {value.get('release_id') or settings.release_id or '-'}")
     print(f"Mode:        {value.get('research_mode') or settings.research_mode}")
+    print(f"Switch:      {'ON' if value.get('switch') == 'on' else 'OFF (parked)'}")
     print(f"Heartbeat:   {value.get('heartbeat_at') or '-'}")
     print(f"Preflight:   {'PASS' if value.get('preflight_ok') else 'not passed'}")
     print(f"Last error:  {value.get('last_error') or '-'}")
@@ -524,6 +621,9 @@ def main() -> int:
     status = commands.add_parser("status", help="show heartbeat and last error")
     status.add_argument("--json", action="store_true")
 
+    switch = commands.add_parser("switch", help="turn the node on or off (off parks after the current hunt)")
+    switch.add_argument("value", choices=("on", "off"))
+
     args = parser.parse_args()
     if args.command == "preflight":
         result = run_preflight(full_dataset=args.full_dataset)
@@ -540,6 +640,8 @@ def main() -> int:
         return stop_node(args.timeout, args.force)
     if args.command == "status":
         return print_status(args.json)
+    if args.command == "switch":
+        return set_switch(args.value)
     return 2
 
 

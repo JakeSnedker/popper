@@ -285,10 +285,21 @@ export function Analytics() {
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <Kpi label="Generated" value={data.totals.generated.toLocaleString()} note={`${data.totals.awaiting_verdict} awaiting a verdict`} />
         <Kpi label="Tests completed" value={data.totals.tests.toLocaleString()} note={`${data.totals.tested_hypotheses} unique hypotheses tested`} tone="text-cyan-300" />
-        <Kpi label="Passed" value={passed.toLocaleString()} note={`${data.totals.survived} survived + ${data.totals.promoted} promoted`} tone="text-emerald-300" />
+        <Kpi label="Passing now" value={data.totals.current_passing.toLocaleString()} note={`${data.totals.current_survived} survived + ${data.totals.current_promoted} promoted`} tone="text-emerald-300" />
         <Kpi label="Pass rate" value={`${data.totals.pass_rate.toFixed(2)}%`} note={`${data.totals.fail_rate.toFixed(2)}% failed`} tone="text-emerald-300" />
         <Kpi label="Median test" value={time(data.test_duration.median_seconds)} note={`Average ${time(data.test_duration.avg_seconds)}`} />
       </div>
+
+      {passed !== data.totals.current_passing && (
+        <div className="rounded-xl border border-slate-600/40 bg-ink-800/60 px-4 py-3 text-xs text-slate-400">
+          <span className="text-slate-200 font-semibold">Why this differs from the funnel:</span>{" "}
+          {passed} passing verdict{passed === 1 ? " has" : "s have"} been recorded in total, but{" "}
+          {data.totals.current_passing} hypothes{data.totals.current_passing === 1 ? "is is" : "es are"}{" "}
+          passing right now. A hypothesis that survived once and was killed on a later
+          re-test keeps its historical verdict but loses its status. The funnel and the
+          survivors page always show current status.
+        </div>
+      )}
 
       <div className="grid lg:grid-cols-2 gap-4 items-start">
         <Outcomes data={data} />

@@ -1,8 +1,10 @@
 """Supabase bearer-token verification for the private Popper team."""
 
+from base64 import urlsafe_b64decode
 from dataclasses import dataclass
 import json
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from fastapi import Header, HTTPException, Request as FastAPIRequest
@@ -23,6 +25,25 @@ class AuthFailure(RuntimeError):
     pass
 
 
+def _subject(token: str) -> str:
+    """The `sub` claim of a Supabase JWT, used only to scope the roster lookup.
+
+    Deliberately does NOT verify the signature: Supabase does that when it serves
+    the request below, and rejects a tampered token outright. A forged `sub` can
+    therefore only ever select a row the real token was never allowed to fetch,
+    which comes back empty rather than authenticated.
+    """
+    try:
+        payload = token.split(".")[1]
+        padded = payload + "=" * (-len(payload) % 4)
+        subject = json.loads(urlsafe_b64decode(padded).decode("utf-8"))["sub"]
+    except (IndexError, ValueError, KeyError, UnicodeDecodeError) as exc:
+        raise AuthFailure("malformed Supabase bearer token") from exc
+    if not isinstance(subject, str) or not subject:
+        raise AuthFailure("Supabase token carries no subject")
+    return subject
+
+
 def _bearer(authorization: str | None) -> str:
     scheme, _, token = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not token.strip():
@@ -34,9 +55,15 @@ def verify_team_token(token: str, timeout: int = 10) -> TeamPrincipal:
     """Let Supabase verify the JWT and RLS-confirm active team membership."""
     if not settings.supabase_url or not settings.supabase_key:
         raise AuthFailure("Supabase authentication is not configured")
+    # Scope the lookup to the caller. Team members are allowed to READ the whole
+    # roster (they need to see teammates), so an unfiltered `limit=1` returns an
+    # ARBITRARY row and hands the caller whatever role sorts first: it demoted the
+    # admin to researcher and would have handed the viewer account write access.
+    # Role must come from the caller's own row or not at all.
+    subject = _subject(token)
     url = (
         f"{settings.supabase_url.rstrip('/')}/rest/v1/team_members"
-        "?select=user_id,email,role,active&active=eq.true&limit=1"
+        f"?select=user_id,email,role,active&active=eq.true&user_id=eq.{quote(subject)}&limit=1"
     )
     request = Request(url, headers={
         "apikey": settings.supabase_key,
@@ -53,6 +80,11 @@ def verify_team_token(token: str, timeout: int = 10) -> TeamPrincipal:
     if not rows:
         raise AuthFailure("user is not an active Popper team member")
     row = rows[0]
+    # Belt and braces: PostgREST verified the token's signature before returning
+    # anything, so `subject` is authentic by the time we get here -- but never let
+    # a filter mismatch through silently.
+    if row["user_id"] != subject:
+        raise AuthFailure("token subject does not match the returned team member")
     return TeamPrincipal(user_id=row["user_id"], email=row["email"], role=row["role"])
 
 

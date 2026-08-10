@@ -146,8 +146,17 @@ class SupabaseMemory(AlphaMemory):
             "verdicts": [Verdict(**row).model_dump(mode="json") for row in verdicts],
         }
 
-    def analysis_records(self, hypothesis_ids: list[str]) -> dict[str, dict]:
-        """Fetch aggregate-report fields in bulk instead of one network trail per hypothesis."""
+    def analysis_records(self, hypothesis_ids: list[str],
+                         with_metrics: bool = True) -> dict[str, dict]:
+        """Fetch aggregate-report fields in bulk instead of one network trail per hypothesis.
+
+        `with_metrics=False` drops the raw_metrics columns. That is not a micro
+        optimisation: raw_metrics carries the full per-trade blotter (~190 KB a
+        row), so every `raw_metrics->x` extraction detoasts the whole blob, eight
+        times per row. Reading it for 1.2k experiments costs ~26s and ~220 MB to
+        recover ~80 bytes of scalars. Callers that only aggregate verdicts and
+        gates must pass False.
+        """
         if not hypothesis_ids:
             return {}
         wanted = set(hypothesis_ids)
@@ -193,13 +202,13 @@ class SupabaseMemory(AlphaMemory):
             records[row["hypothesis_id"]]["specs"].append(row)
 
         spec_ids = list(spec_owner)
-        metric_columns = ",".join(
-            f"{name}:raw_metrics->{name}" for name in _ANALYSIS_METRICS
-        )
+        columns = "id,spec_id,dataset,trades_n,created_at"
+        if with_metrics:
+            columns += "," + ",".join(
+                f"{name}:raw_metrics->{name}" for name in _ANALYSIS_METRICS
+            )
         experiments = paged(
-            "experiments",
-            f"id,spec_id,dataset,trades_n,created_at,{metric_columns}",
-            "spec_id", spec_ids,
+            "experiments", columns, "spec_id", spec_ids,
         ) if spec_ids else []
         experiments = [row for row in experiments if row["spec_id"] in spec_owner]
         for row in experiments:

@@ -20,7 +20,7 @@ to disprove it, not merely show a pretty backtest. This is Popperian science app
 
 ## Current target
 - **Data/execution:** MetaTrader 5 — US30, NAS100 (indices). Portable to Futures (NinjaTrader) later.
-- **Agents:** role-routed official Claude.ai and ChatGPT/Codex subscriptions.
+- **Agents:** role-routed Claude.ai, ChatGPT/Codex, and free DeepSeek via OpenCode.
 - **Store:** SQLite locally or shared Supabase alpha memory.
 - **Status:** Steps 1-5 complete; Windows operator packaging is in Step 6.
   See `docs/POPPER_NODE_V01_MASTER_PLAN.md`, `docs/WINDOWS_OPERATOR_GUIDE.md`, and `docs/LLM_ROUTING.md`.

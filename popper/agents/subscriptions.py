@@ -1,10 +1,7 @@
-"""Detect which official subscription CLIs this operator is actually logged into.
+"""Detect the zero-marginal-cost LLM CLIs available to this operator.
 
-Popper is subscription-only: an API-key login is metered and is treated as
-absent. Detection is what makes a node self-configuring — an operator with both
-Claude.ai and ChatGPT gets the full route table, an operator with only one gets
-routes collapsed onto the subscription they own, and nobody edits a config file
-to say so.
+Claude and Codex require official subscription OAuth. OpenCode contributes its
+free hosted DeepSeek model. Metered API-key routes are not treated as available.
 """
 
 from __future__ import annotations
@@ -13,7 +10,12 @@ import json
 import os
 import subprocess
 
-KNOWN_PROVIDERS = ("claude_cli", "codex_cli")
+KNOWN_PROVIDERS = ("claude_cli", "codex_cli", "opencode_cli")
+
+# The only opencode model Popper routes to by default: OpenCode Zen's free
+# DeepSeek tier. Named here (not in llm.py) so detection and routing cannot
+# disagree about which model counts as zero-cost.
+OPENCODE_FREE_MODEL = "opencode/deepseek-v4-flash-free"
 
 _cache: dict[str, tuple[bool, str]] | None = None
 
@@ -56,7 +58,21 @@ def _probe_codex() -> tuple[bool, str]:
     return False, "run `codex login` and sign in with a ChatGPT subscription"
 
 
-_PROBES = {"claude_cli": _probe_claude, "codex_cli": _probe_codex}
+def _probe_opencode() -> tuple[bool, str]:
+    executable = "opencode.cmd" if os.name == "nt" else "opencode"
+    result = _run([executable, "models", "opencode"])
+    if result is None:
+        return False, "opencode CLI is not installed or did not respond"
+    if result.returncode == 0 and OPENCODE_FREE_MODEL in (result.stdout or ""):
+        return True, f"free OpenCode Zen tier ({OPENCODE_FREE_MODEL})"
+    return False, "update or run `opencode` so its free DeepSeek model is listed"
+
+
+_PROBES = {
+    "claude_cli": _probe_claude,
+    "codex_cli": _probe_codex,
+    "opencode_cli": _probe_opencode,
+}
 
 
 def probe(refresh: bool = False) -> dict[str, tuple[bool, str]]:
@@ -72,6 +88,6 @@ def probe(refresh: bool = False) -> dict[str, tuple[bool, str]]:
 
 
 def detect_providers(refresh: bool = False) -> list[str]:
-    """Authenticated providers in preference order: Claude first, Codex second."""
+    """Available providers in stable route-filtering order."""
     state = probe(refresh=refresh)
     return [name for name in KNOWN_PROVIDERS if state[name][0]]

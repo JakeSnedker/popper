@@ -26,18 +26,16 @@ class Settings(BaseSettings):
     # Canonical dataset is distributed separately from Git and may live on another drive.
     dataset_dir: str = "data/ftmo-us30-v1"
 
-    # Subscription-only runtime. Each operator authenticates the official
-    # Claude and Codex CLIs with their own Claude.ai / ChatGPT account.
+    # Zero-marginal-cost runtime: official Claude/ChatGPT subscription CLIs
+    # plus OpenCode's approved free hosted DeepSeek model.
     llm_backend: str = "subscriptions"
     llm_route_policy: str = "round_robin"  # priority | round_robin
-    # Which subscription CLIs this node may use. "auto" detects the operator's
-    # actual logins: both -> Claude leads and Codex is the fallback; only one ->
-    # every route collapses onto the subscription they own. Set an explicit list
-    # (e.g. codex_cli) only to deliberately hold a provider back.
+    # "auto" detects Claude/Codex subscription logins and the free OpenCode
+    # DeepSeek route. Use an explicit list only to deliberately hold one back.
     llm_providers: str = "auto"
-    llm_hypothesis_route: str = "claude_cli:sonnet,codex_cli:default"
+    llm_hypothesis_route: str = "claude_cli:sonnet,codex_cli:default,opencode_cli:deepseek"
     llm_hypothesis_strong_route: str = "codex_cli:default,claude_cli:sonnet"
-    llm_wildcard_route: str = "codex_cli:default,claude_cli:opus"
+    llm_wildcard_route: str = "codex_cli:default,opencode_cli:deepseek,claude_cli:opus"
     llm_synthesis_route: str = "claude_cli:haiku,codex_cli:default"
     llm_synthesis_strong_route: str = "codex_cli:default,claude_cli:sonnet"
     llm_audit_route: str = "codex_cli:default,claude_cli:opus"
@@ -47,7 +45,7 @@ class Settings(BaseSettings):
     rescue_backlog: bool = True
     rescue_backlog_limit: int = 200
     rescue_backlog_band: float = 0.1
-    # explore | balanced | exploit | auto. Auto explores while subscriptions are
+    # explore | balanced | exploit | auto. Auto explores while an LLM route is
     # available and runs one local rescue at a time during provider backoff.
     research_mode: str = "auto"
     auto_exploit_batch_size: int = 1
@@ -62,6 +60,13 @@ class Settings(BaseSettings):
     # Safety: `codex login status` must report ChatGPT auth. An API-key Codex
     # login is metered and is rejected unless this explicit opt-in is true.
     llm_allow_metered_codex_cli: bool = False
+    # Claude reserve. The node stops calling claude_cli once it has spent this
+    # many calls in the rolling window, leaving the rest of the Claude.ai
+    # session limit for interactive Claude Code. Research continues on the other
+    # providers rather than stopping. 0 disables the cap. The count is shared
+    # across hunt processes via .popper/llm_budget.json.
+    llm_claude_max_calls_per_window: int = 60
+    llm_claude_reserve_window_hours: int = 5
 
     # default per-trade cost model — INFORMATIONAL, NON-GATING. The gauntlet
     # judges gross (frictionless) edge; these only feed the *_net raw_metrics

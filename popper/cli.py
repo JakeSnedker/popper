@@ -5,6 +5,9 @@
     popper research --iterations N # the unattended Director loop (autonomy demo)
     popper seed                   # populate alpha memory with example hypotheses
     popper stats                  # print current counts
+    popper requeue [--dry-run] [--limit N]
+                                  # re-test hypotheses stranded mid-run (status
+                                  # TESTING/PROPOSED with no verdict)
     popper serve                  # run the API for the dashboard
 """
 
@@ -133,6 +136,39 @@ def _print_run(s) -> None:
     print(bar)
 
 
+def _requeue(argv: list[str]) -> None:
+    import argparse
+
+    p = argparse.ArgumentParser(
+        prog="popper requeue",
+        description="Re-test hypotheses stranded between synthesis and verdict.",
+    )
+    p.add_argument("--dry-run", action="store_true", help="list what would run, test nothing")
+    p.add_argument("--limit", type=int, help="re-test at most N (default: all)")
+    p.add_argument("--start", help="period start YYYY-MM-DD")
+    p.add_argument("--end", help="period end YYYY-MM-DD")
+    a = p.parse_args(argv)
+
+    from popper.research.requeue import requeue
+
+    s = requeue(
+        limit=a.limit, dry_run=a.dry_run,
+        period=(a.start, a.end) if a.start and a.end else None,
+    )
+    print(f"stranded, re-runnable : {s['runnable']}")
+    print(f"stranded, never synthesised: {s['orphaned']}  {', '.join(s['orphaned_ids'][:5])}"
+          + (" ..." if len(s["orphaned_ids"]) > 5 else ""))
+    if a.dry_run:
+        print("\n--dry-run: nothing was tested.")
+        return
+    for verdict, count in sorted(s["verdicts"].items()):
+        print(f"  {verdict:8s} {count}")
+    if s["failed"]:
+        print(f"\n{len(s['failed'])} failed to re-run:")
+        for row in s["failed"][:10]:
+            print(f"  {row['id']}: {row['error']}")
+
+
 def main() -> None:
     # ponytail: Windows stdout defaults to cp1252 and mangles the summary's — / arrows.
     if hasattr(sys.stdout, "reconfigure"):
@@ -145,11 +181,16 @@ def main() -> None:
         _research(sys.argv[2:])
     elif cmd == "seed":
         from popper.seed import seed
-        seed()
+        try:
+            seed("--force" in sys.argv[2:])
+        except RuntimeError as e:
+            sys.exit(str(e))
     elif cmd == "stats":
         from popper.memory import get_memory
         import json
         print(json.dumps(get_memory().stats(), indent=2))
+    elif cmd == "requeue":
+        _requeue(sys.argv[2:])
     elif cmd == "serve":
         import uvicorn
         uvicorn.run("popper.api.main:app", host=settings.api_host, port=settings.api_port, reload=True)

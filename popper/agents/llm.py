@@ -18,8 +18,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from popper.agents.subscriptions import detect_providers
+from popper.agents.subscriptions import OPENCODE_FREE_MODEL, detect_providers
 from popper.config import settings
+from popper.node_operator import NodePaths, read_json, write_json_atomic
 
 # Logical roles, not provider model ids. LLMRouter resolves each role from config.
 MODELS = {
@@ -37,16 +38,17 @@ _RATE_MARKERS = (
     "capacity", "resets at", "you've hit your limit", "429",
 )
 _CODEX_EXECUTABLE = "codex.cmd" if os.name == "nt" else "codex"
-_KNOWN_PROVIDERS = {"claude_cli", "codex_cli"}
+_OPENCODE_EXECUTABLE = "opencode.cmd" if os.name == "nt" else "opencode"
+_KNOWN_PROVIDERS = {"claude_cli", "codex_cli", "opencode_cli"}
 # Model to use for a role when the operator owns only this provider and the
 # configured route named nobody else they have.
 _SINGLE_PROVIDER_FALLBACK = {
-    "hypothesis": {"claude_cli": "sonnet", "codex_cli": "default"},
-    "hypothesis_strong": {"claude_cli": "sonnet", "codex_cli": "default"},
-    "wildcard": {"claude_cli": "opus", "codex_cli": "default"},
-    "synthesis": {"claude_cli": "haiku", "codex_cli": "default"},
-    "synthesis_strong": {"claude_cli": "sonnet", "codex_cli": "default"},
-    "audit": {"claude_cli": "opus", "codex_cli": "default"},
+    "hypothesis": {"claude_cli": "sonnet", "codex_cli": "default", "opencode_cli": "deepseek"},
+    "hypothesis_strong": {"claude_cli": "sonnet", "codex_cli": "default", "opencode_cli": "deepseek"},
+    "wildcard": {"claude_cli": "opus", "codex_cli": "default", "opencode_cli": "deepseek"},
+    "synthesis": {"claude_cli": "haiku", "codex_cli": "default", "opencode_cli": "deepseek"},
+    "synthesis_strong": {"claude_cli": "sonnet", "codex_cli": "default", "opencode_cli": "deepseek"},
+    "audit": {"claude_cli": "opus", "codex_cli": "default", "opencode_cli": "deepseek"},
 }
 _HYPOTHESIS_ITEM_SCHEMA = {
     "type": "object",
@@ -111,7 +113,7 @@ class LLMOutputError(LLMError):
 
 
 class NoSubscriptionAvailable(LLMError):
-    """The operator is not signed in to any supported subscription CLI."""
+    """The operator has no supported zero-marginal-cost LLM route."""
 
 
 class LLMProviderError(LLMError):
@@ -392,6 +394,194 @@ class CodexCliClient(_MeasuredClient):
         return _find_codex_text(events)
 
 
+# OpenCode is a coding agent, not a completion endpoint. The inline agent has
+# no tools, and XDG isolation below prevents the operator's global config, MCPs,
+# sessions, plugins, and parent AGENTS.md from entering a research call.
+_OPENCODE_CONFIG_CONTENT = json.dumps({
+    "permission": {"*": "deny"},
+    "tools": {"*": False},
+    "agent": {
+        "popper": {
+            "description": "Stateless no-tools Popper model transport",
+            "mode": "primary",
+            "prompt": "Return only the requested answer. Never use tools or inspect files.",
+            "permission": {"*": "deny"},
+            "tools": {"*": False},
+        },
+    },
+}, separators=(",", ":"))
+_OPENCODE_MODEL_ALIASES = {"default": OPENCODE_FREE_MODEL, "deepseek": OPENCODE_FREE_MODEL}
+
+
+def _opencode_model(model: str) -> str:
+    resolved = _OPENCODE_MODEL_ALIASES.get(model, model)
+    if resolved != OPENCODE_FREE_MODEL:
+        raise _provider_error(
+            "opencode_cli",
+            f"opencode model {resolved!r} is not the approved free DeepSeek model; "
+            "use opencode_cli:deepseek",
+        )
+    return resolved
+
+
+def _find_opencode_text(events: list[dict]) -> str:
+    parts = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "text":
+            continue
+        part = event.get("part")
+        text = part.get("text") if isinstance(part, dict) else None
+        if isinstance(text, str) and text:
+            parts.append(text)
+    result = "".join(parts).strip()
+    if result:
+        return result
+    raise LLMOutputError("opencode CLI returned no assistant text")
+
+
+class OpenCodeCliClient(_MeasuredClient):
+    """Official opencode CLI pinned to the free OpenCode Zen DeepSeek tier.
+
+    Runs from an empty throwaway directory with an isolated config so the agent
+    can only answer. opencode has no structured-output flag, so the schema is
+    stated in the prompt and the agents' existing JSON repair covers a miss.
+    """
+
+    provider = "opencode_cli"
+
+    def __init__(self, timeout: int = 300):
+        super().__init__()
+        self.timeout = timeout
+
+    def complete(self, system: str, prompt: str, model: str, max_tokens: int = 1024,
+                 role: str = "") -> str:
+        target = _opencode_model(model)
+        env = {k: v for k, v in os.environ.items() if k not in {
+            "ANTHROPIC_API_KEY", "POPPER_ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY", "POPPER_OPENAI_API_KEY", "NVIDIA_API_KEY",
+            "DEEPSEEK_API_KEY", "GLM_API_KEY", "OPENROUTER_API_KEY",
+            "OPENCODE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY",
+        }}
+        instructions = (
+            "Follow these instructions exactly. Do not use tools, inspect files, "
+            "or comment on your working directory.\n"
+            f"{system}\n"
+        )
+        schema = _response_schema(role)
+        if schema:
+            instructions += (
+                "\nReturn ONLY one JSON object matching this JSON Schema. No prose, "
+                f"no code fence:\n{json.dumps(schema, separators=(',', ':'))}\n"
+            )
+        instructions += f"\nKeep the response within approximately {max_tokens} tokens.\n"
+        with tempfile.TemporaryDirectory(prefix="popper-opencode-") as temporary:
+            root = Path(temporary)
+            workspace = root / "work"
+            workspace.mkdir()
+            # Bound instruction discovery to this empty workspace.
+            (workspace / ".git").mkdir()
+            for variable, directory in (
+                ("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"),
+                ("XDG_CACHE_HOME", "cache"), ("XDG_STATE_HOME", "state"),
+            ):
+                env[variable] = str(root / directory)
+            env.pop("OPENCODE_CONFIG", None)
+            env.pop("OPENCODE_CONFIG_DIR", None)
+            env["OPENCODE_CONFIG_CONTENT"] = _OPENCODE_CONFIG_CONTENT
+            env["OPENCODE_DISABLE_DEFAULT_PLUGINS"] = "true"
+            env["NO_COLOR"] = "1"
+            command = [
+                _OPENCODE_EXECUTABLE, "run", "--dir", str(workspace),
+                "--model", target, "--agent", "popper", "--format", "json", "--pure",
+            ]
+            try:
+                result = subprocess.run(
+                    command, input=f"{instructions}\nTask:\n{prompt}", capture_output=True,
+                    text=True, env=env, timeout=self.timeout, cwd=str(workspace),
+                )
+            except FileNotFoundError as e:
+                raise _provider_error(self.provider, "`opencode` CLI not found") from e
+            except subprocess.TimeoutExpired as e:
+                raise _provider_error(
+                    self.provider, f"timed out after {self.timeout}s", code=408,
+                ) from e
+        events = []
+        for line in result.stdout.splitlines():
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        # opencode reports provider failures as an error event and still exits 0,
+        # so the events are checked before the return code, not after it.
+        error = next((e for e in events if e.get("type") == "error"), None)
+        if error:
+            detail = error.get("error") or error
+            data = detail.get("data") if isinstance(detail, dict) else None
+            message = data.get("message") if isinstance(data, dict) else None
+            code = data.get("statusCode") if isinstance(data, dict) else None
+            raise _provider_error(self.provider, str(message or json.dumps(detail)[:500]),
+                                  code=code if isinstance(code, int) else None)
+        if result.returncode != 0:
+            combined = "\n".join(x for x in (result.stderr.strip(), result.stdout.strip()) if x)
+            raise _provider_error(self.provider, combined)
+        tokens = {}
+        cost = 0.0
+        for event in reversed(events):
+            part = event.get("part") if isinstance(event, dict) else None
+            if isinstance(part, dict) and isinstance(part.get("tokens"), dict):
+                tokens = part["tokens"]
+                cost = float(part.get("cost") or 0.0)
+                break
+        cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+        self._meta(
+            input_tokens=tokens.get("input", 0),
+            output_tokens=tokens.get("output", 0),
+            cache_read_tokens=cache.get("read", 0),
+            cache_write_tokens=cache.get("write", 0),
+            cost_usd=cost,
+        )
+        return _find_opencode_text(events)
+
+
+def _budget_file() -> Path:
+    return NodePaths.for_root().state_dir / "llm_budget.json"
+
+
+def _recent_claude_calls(now: float) -> list[float]:
+    window = max(1, settings.llm_claude_reserve_window_hours) * 3600
+    calls = read_json(_budget_file()).get("claude_cli") or []
+    return [t for t in calls if isinstance(t, (int, float)) and now - t < window]
+
+
+def claude_reserve_seconds_left() -> int:
+    """0 while Claude may still be called; otherwise seconds until the cap frees.
+
+    Every hunt is a separate process, so the count lives on disk. An in-memory
+    counter would reset on each hunt and cap nothing.
+    """
+    limit = settings.llm_claude_max_calls_per_window
+    if limit <= 0:
+        return 0
+    now = time.time()
+    calls = _recent_claude_calls(now)
+    if len(calls) < limit:
+        return 0
+    window = max(1, settings.llm_claude_reserve_window_hours) * 3600
+    return max(1, round(min(calls) + window - now))
+
+
+def record_claude_call() -> None:
+    """Count one call against the reserve. Attempts count: they spend the quota."""
+    if settings.llm_claude_max_calls_per_window <= 0:
+        return
+    now = time.time()
+    kept = _recent_claude_calls(now) + [now]
+    # ponytail: last writer wins across concurrent hunts. A lost increment
+    # undercounts by one call, which is cheaper than a lock file; add one if
+    # several nodes ever share a state directory.
+    write_json_atomic(_budget_file(), {"claude_cli": kept[-1000:]})
+
+
 class LLMRouter:
     """Resolve logical agent roles to providers with failover and circuit breaking."""
 
@@ -421,6 +611,8 @@ class LLMRouter:
             client = ClaudeCliClient()
         elif provider == "codex_cli":
             client = CodexCliClient()
+        elif provider == "opencode_cli":
+            client = OpenCodeCliClient()
         else:  # parse_route prevents this; keep the boundary fail-closed.
             raise ValueError(f"unknown LLM provider {provider!r}")
         self._clients[provider] = client
@@ -446,6 +638,19 @@ class LLMRouter:
                 available_at.append(blocked)
                 errors.append(f"{target.provider} circuit open")
                 continue
+            if target.provider == "claude_cli":
+                # The node holds back part of the Claude.ai session limit for
+                # interactive use; other providers still serve the role.
+                reserve_wait = claude_reserve_seconds_left()
+                if reserve_wait:
+                    available_at.append(now + reserve_wait)
+                    errors.append(
+                        f"claude_cli reserve spent "
+                        f"({settings.llm_claude_max_calls_per_window} calls per "
+                        f"{settings.llm_claude_reserve_window_hours}h)"
+                    )
+                    continue
+                record_claude_call()
             client = self._client(target.provider)
             started = time.perf_counter()
             client.last_meta = {}
@@ -519,19 +724,19 @@ class LLMRouter:
 
 
 def enabled_providers() -> set[str]:
-    """Subscription CLIs this node may use.
+    """Zero-marginal-cost CLI routes this node may use.
 
-    "auto" (the default) asks the CLIs themselves, so a node configures itself
-    from whatever the operator is logged into. An explicit list is honoured as
-    an override but still cannot invent a provider Popper does not know.
+    "auto" detects subscription OAuth plus the approved free OpenCode model.
+    An explicit list is honoured but cannot invent an unknown provider.
     """
     configured = settings.llm_providers.strip()
     if configured.lower() == "auto":
         detected = detect_providers()
         if not detected:
             raise NoSubscriptionAvailable(
-                "no authenticated subscription CLI found; sign in with Claude.ai "
-                "(`claude`) or ChatGPT (`codex login`) before starting a node"
+                "no zero-marginal-cost LLM route found; sign in with Claude.ai "
+                "(`claude`) or ChatGPT (`codex login`), or update `opencode` for "
+                "its free DeepSeek model before starting a node"
             )
         return set(detected)
     names = {part.strip() for part in configured.split(",") if part.strip()}
@@ -544,12 +749,12 @@ def enabled_providers() -> set[str]:
 
 
 def _for_this_node(role: str, targets: list[RouteTarget], allowed: set[str]) -> list[RouteTarget]:
-    """Drop targets this node has no subscription for, preserving fallback order."""
+    """Drop targets unavailable on this node, preserving fallback order."""
     kept = [target for target in targets if target.provider in allowed]
     if kept:
         return kept
     # The role named only providers this operator lacks. Fall back to their own
-    # subscription rather than failing the node: a single-provider operator must
+    # provider rather than failing the node: a single-provider operator must
     # still be able to run every role.
     substitute = _SINGLE_PROVIDER_FALLBACK.get(role)
     for provider in sorted(allowed):
