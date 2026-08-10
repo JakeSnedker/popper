@@ -24,11 +24,17 @@ function tone(node: { healthy: boolean; status: string }): string {
   return "bg-slate-600";
 }
 
-function SwitchToggle({
+function Toggle({
   node,
+  field,
+  label,
+  title,
   onDone,
 }: {
   node: FleetNode;
+  field: "switch" | "exploit";
+  label: string;
+  title: string;
   onDone: () => void;
 }) {
   const { canWrite } = useAuth();
@@ -37,13 +43,15 @@ function SwitchToggle({
 
   // Only non-viewers can toggle; the API/repo enforce the per-operator scope.
   const enabled = canWrite && node.can_toggle;
-  const on = node.switch === "on";
+  const on = node[field] === "on";
 
   async function toggle() {
     setBusy(true);
     setError(null);
     try {
-      await api.setNodeSwitch(node.machine_id, on ? "off" : "on");
+      const next = on ? "off" : "on";
+      if (field === "switch") await api.setNodeSwitch(node.machine_id, next);
+      else await api.setNodeExploit(node.machine_id, next);
       onDone();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -53,19 +61,63 @@ function SwitchToggle({
   }
 
   return (
-    <div className="flex flex-col items-end gap-1 shrink-0">
+    <div className="flex flex-col items-end gap-0.5 shrink-0">
       <button
         onClick={toggle}
         disabled={!enabled || busy}
-        title={enabled ? (on ? "Park this node after the current hunt" : "Resume this node") : "Read-only in viewer mode"}
-        className={`inline-flex items-center gap-2 rounded-full px-2 py-1 text-[10px] font-semibold transition ${
+        title={enabled ? title : "Read-only in viewer mode"}
+        className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold transition ${
           enabled ? "hover:brightness-125 cursor-pointer" : "cursor-not-allowed opacity-40"
         } ${on ? "bg-emerald-600/20 text-emerald-300" : "bg-slate-700 text-slate-300"}`}
       >
         <span className={`w-2 h-2 rounded-full ${on ? "bg-emerald-400" : "bg-slate-400"}`} />
-        {busy ? "..." : on ? "ON" : "OFF"}
+        {busy ? "..." : `${label} ${on ? "ON" : "OFF"}`}
       </button>
-      {error && <span className="text-[9px] text-rose-400">{error}</span>}
+      {error && <span className="text-[9px] text-rose-400 max-w-[9rem] truncate" title={error}>{error}</span>}
+    </div>
+  );
+}
+
+function RequeueButton({ node, onDone }: { node: FleetNode; onDone: () => void }) {
+  const { canWrite } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = canWrite && node.can_toggle && !node.requeue_pending;
+
+  async function request() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.requeueNode(node.machine_id);
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-0.5 shrink-0">
+      <button
+        onClick={request}
+        disabled={!enabled || busy}
+        // The backlog is fleet-wide, so this picks WHO does the work, not whose
+        // work it is. An offline node picks the request up when it next runs.
+        title={
+          node.requeue_pending
+            ? "A requeue is already queued for this node"
+            : "Ask this node to re-test the shared backlog of stranded hypotheses"
+        }
+        className={`rounded-full px-2 py-1 text-[10px] font-semibold transition ${
+          enabled
+            ? "bg-cyan-600/20 text-cyan-300 hover:brightness-125 cursor-pointer"
+            : "bg-slate-700 text-slate-400 cursor-not-allowed opacity-50"
+        }`}
+      >
+        {busy ? "..." : node.requeue_pending ? "REQUEUE QUEUED" : "REQUEUE"}
+      </button>
+      {error && <span className="text-[9px] text-rose-400 max-w-[9rem] truncate" title={error}>{error}</span>}
     </div>
   );
 }
@@ -94,21 +146,54 @@ export function NodeFleet() {
       </div>
       <div className="divide-y divide-ink-600">
         {data.nodes.map((node) => (
-          <div key={node.machine_id} className="px-3 py-2 flex items-center gap-3">
+          <div key={node.machine_id} className="px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-2">
             <span className={`w-2 h-2 rounded-full shrink-0 ${tone(node)}`} />
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline gap-2">
                 <span className="font-mono text-xs text-slate-200 truncate">{node.machine_id}</span>
                 <span className="text-[10px] text-slate-500 truncate">{node.operator_label}</span>
+                {/* Online answers "is that computer even on", which is a different
+                    question from the worker status next to it. */}
+                <span
+                  className={`text-[9px] font-semibold uppercase tracking-wider shrink-0 ${
+                    node.online ? "text-emerald-400" : "text-slate-500"
+                  }`}
+                  title={node.online ? "Heartbeating now" : "No recent heartbeat — machine off or unreachable"}
+                >
+                  {node.online ? "online" : "offline"}
+                </span>
               </div>
               {node.last_error && (
                 <div className="text-[10px] text-rose-400 truncate" title={node.last_error}>
                   {node.last_error}
                 </div>
               )}
+              {node.requeue_result && (
+                <div className="text-[10px] text-cyan-300/80 truncate" title={node.requeue_result}>
+                  last requeue: {node.requeue_result}
+                </div>
+              )}
             </div>
             <span className="pill bg-ink-700 text-slate-300 shrink-0">{node.status}</span>
-            <SwitchToggle node={node} onDone={reload} />
+            <Toggle
+              node={node}
+              field="switch"
+              label="NODE"
+              title={node.switch === "on" ? "Park this node after the current hunt" : "Resume this node"}
+              onDone={reload}
+            />
+            <Toggle
+              node={node}
+              field="exploit"
+              label="EXPLOIT"
+              title={
+                node.exploit === "on"
+                  ? "Stop CPU-only survivor refinement; keep proposing new hypotheses"
+                  : "Resume CPU-only survivor refinement"
+              }
+              onDone={reload}
+            />
+            <RequeueButton node={node} onDone={reload} />
             <span className="text-[10px] text-slate-500 shrink-0 w-16 text-right">
               {age(node.seconds_since_heartbeat)}
             </span>

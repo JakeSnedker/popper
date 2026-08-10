@@ -73,22 +73,14 @@ function Protect-EnvFile {
 }
 
 function Require-Commands {
-    $missing = @()
-    foreach ($command in @("python", "git", "node", "npm")) {
-        if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { $missing += $command }
+    # One dependency check, in one place: check-deps.ps1 also runs standalone as
+    # operator\Popper-Check.cmd, so the operator can fix a missing tool before
+    # setup ever asks for a password. It never installs anything without -Install.
+    & (Join-Path $PSScriptRoot "check-deps.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw ("Prerequisites are missing. Run operator\Popper-Check.cmd -Install, " +
+               "then run setup again. See docs\OPERATOR_ONBOARDING.md.")
     }
-    if ($missing.Count -gt 0) {
-        throw "Missing prerequisites: $($missing -join ', '). See docs\WINDOWS_OPERATOR_GUIDE.md."
-    }
-    # A node needs at least one subscription CLI, not both. Operators with only a
-    # ChatGPT subscription run every role on Codex; preflight proves the login.
-    $subscriptions = @("claude", "codex") |
-        Where-Object { Get-Command $_ -ErrorAction SilentlyContinue }
-    if ($subscriptions.Count -eq 0) {
-        throw ("No subscription CLI found. Install Claude Code (Claude.ai subscription) " +
-               "or Codex (ChatGPT subscription). See docs\WINDOWS_OPERATOR_GUIDE.md.")
-    }
-    Write-Host "Subscription CLIs present: $($subscriptions -join ', ')" -ForegroundColor DarkGray
 }
 
 function New-DesktopShortcuts {
@@ -109,6 +101,10 @@ function New-DesktopShortcuts {
         $shortcut.Save()
     }
 }
+
+# Checked first, before the form: nobody should type a Supabase password and wait
+# through a dependency install only to be told Node.js was never installed.
+Require-Commands
 
 $existing = Get-EnvValues $EnvFile
 $createShortcuts = $false
@@ -243,8 +239,6 @@ if (-not $Headless) {
 } elseif (-not (Test-Path -LiteralPath $EnvFile)) {
     throw "Headless setup requires an existing .env file."
 }
-
-Require-Commands
 
 if (-not $SkipInstall) {
     if (-not (Test-Path -LiteralPath $Python)) {

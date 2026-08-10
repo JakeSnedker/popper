@@ -223,3 +223,68 @@ def test_presence_error_detail_is_truncated(monkeypatch):
     assert len(error) < 400, f"error detail was {len(error)} chars"
     assert "\n" not in error
     assert error.endswith("...[truncated]")
+
+
+# --- exploit toggle and fleet online/requeue derivation ---
+
+def test_exploit_file_defaults_on_and_round_trips(tmp_path):
+    from popper.node_operator import NodePaths, read_exploit, write_exploit
+
+    paths = NodePaths.for_root(tmp_path)
+    paths.ensure()
+    assert read_exploit(paths) == "on", "a node with no exploit file must still refine"
+    write_exploit(paths, "off")
+    assert read_exploit(paths) == "off"
+    write_exploit(paths, "on")
+    assert read_exploit(paths) == "on"
+    # Garbage must not silently disable the engine.
+    paths.exploit_file.write_text("banana", encoding="ascii")
+    assert read_exploit(paths) == "on"
+    import pytest
+    with pytest.raises(ValueError):
+        write_exploit(paths, "maybe")
+
+
+def test_fleet_marks_online_separately_from_healthy(monkeypatch):
+    """A parked node is ONLINE (its machine is on and reporting) but not HEALTHY.
+    Collapsing the two hid whether an operator's computer was even switched on."""
+    from datetime import datetime, timedelta, timezone
+
+    from popper import node_presence
+
+    now = datetime.now(timezone.utc)
+    rows = [
+        {"machine_id": "fresh-parked", "status": "parked",
+         "heartbeat_at": now.isoformat()},
+        {"machine_id": "fresh-running", "status": "running",
+         "heartbeat_at": now.isoformat()},
+        {"machine_id": "stale", "status": "running",
+         "heartbeat_at": (now - timedelta(hours=3)).isoformat()},
+        {"machine_id": "requeueing", "status": "running",
+         "heartbeat_at": now.isoformat(),
+         "requeue_requested_at": now.isoformat()},
+    ]
+
+    class _Query:
+        def select(self, *_a, **_k):
+            return self
+
+        def order(self, *_a, **_k):
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": [dict(r) for r in rows]})()
+
+    monkeypatch.setattr(node_presence, "enabled", lambda: True)
+    monkeypatch.setattr(node_presence, "_get_client",
+                        lambda: type("C", (), {"table": lambda self, _n: _Query()})())
+
+    fleet = {row["machine_id"]: row for row in node_presence.fleet()}
+    assert fleet["fresh-parked"]["online"] is True
+    assert fleet["fresh-parked"]["healthy"] is True   # parked is an OK state
+    assert fleet["stale"]["online"] is False
+    assert fleet["stale"]["healthy"] is False
+    # Defaults must be present even when the columns are absent on older rows.
+    assert fleet["fresh-running"]["exploit"] == "on"
+    assert fleet["fresh-running"]["requeue_pending"] is False
+    assert fleet["requeueing"]["requeue_pending"] is True

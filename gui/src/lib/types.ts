@@ -484,8 +484,16 @@ export interface FleetNode {
   seconds_since_heartbeat: number | null;
   healthy: boolean;
   switch: "on" | "off";
+  exploit: "on" | "off";
   can_toggle: boolean;
   operator_id?: string;
+  // online = heartbeating at all (the machine is on and reachable).
+  // healthy = online AND actually working, so a parked node is online but not healthy.
+  online: boolean;
+  requeue_pending: boolean;
+  requeue_requested_at?: string | null;
+  requeue_finished_at?: string | null;
+  requeue_result?: string | null;
 }
 
 export interface FleetMe {

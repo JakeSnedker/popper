@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 
 KNOWN_PROVIDERS = ("claude_cli", "codex_cli", "opencode_cli")
@@ -20,6 +21,19 @@ OPENCODE_FREE_MODEL = "opencode/deepseek-v4-flash-free"
 _cache: dict[str, tuple[bool, str]] | None = None
 
 
+def _resolve(name: str) -> str | None:
+    """Absolute path of a CLI, or None if it is not installed.
+
+    Required on Windows: an npm global install leaves only `name.cmd`, and
+    CreateProcess (what subprocess uses) appends `.exe` and nothing else, so
+    subprocess.run(["claude", ...]) raises FileNotFoundError on a machine where
+    `claude` works fine in the terminal. shutil.which honours PATHEXT, so it
+    finds the .cmd shim, the native .exe, or the POSIX binary without the caller
+    having to guess which install method the operator used.
+    """
+    return shutil.which(name)
+
+
 def _run(command: list[str], strip_keys: tuple[str, ...] = ()) -> subprocess.CompletedProcess | None:
     env = {key: value for key, value in os.environ.items() if key not in strip_keys}
     try:
@@ -29,7 +43,10 @@ def _run(command: list[str], strip_keys: tuple[str, ...] = ()) -> subprocess.Com
 
 
 def _probe_claude() -> tuple[bool, str]:
-    result = _run(["claude", "auth", "status"],
+    executable = _resolve("claude")
+    if executable is None:
+        return False, "Claude Code CLI is not installed or did not respond"
+    result = _run([executable, "auth", "status"],
                   strip_keys=("ANTHROPIC_API_KEY", "POPPER_ANTHROPIC_API_KEY"))
     if result is None:
         return False, "Claude Code CLI is not installed or did not respond"
@@ -43,7 +60,9 @@ def _probe_claude() -> tuple[bool, str]:
 
 
 def _probe_codex() -> tuple[bool, str]:
-    executable = "codex.cmd" if os.name == "nt" else "codex"
+    executable = _resolve("codex")
+    if executable is None:
+        return False, "Codex CLI is not installed or did not respond"
     result = _run([executable, "login", "status"],
                   strip_keys=("OPENAI_API_KEY", "POPPER_OPENAI_API_KEY"))
     if result is None:
@@ -59,7 +78,9 @@ def _probe_codex() -> tuple[bool, str]:
 
 
 def _probe_opencode() -> tuple[bool, str]:
-    executable = "opencode.cmd" if os.name == "nt" else "opencode"
+    executable = _resolve("opencode")
+    if executable is None:
+        return False, "opencode CLI is not installed or did not respond"
     result = _run([executable, "models", "opencode"])
     if result is None:
         return False, "opencode CLI is not installed or did not respond"

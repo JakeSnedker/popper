@@ -110,6 +110,16 @@ export const api = {
       `/api/fleet/${encodeURIComponent(machineId)}/switch`,
       { switch: switchVal }
     ),
+  setNodeExploit: (machineId: string, exploit: "on" | "off") =>
+    post<{ machine_id: string; exploit: string; ok: boolean }>(
+      `/api/fleet/${encodeURIComponent(machineId)}/exploit`,
+      { exploit }
+    ),
+  requeueNode: (machineId: string) =>
+    post<{ machine_id: string; requeue_requested: boolean; ok: boolean }>(
+      `/api/fleet/${encodeURIComponent(machineId)}/requeue`,
+      {}
+    ),
   verdicts: (limit = 20) => get<{ verdicts: VerdictFeedItem[] }>(`/api/verdicts?limit=${limit}`),
   timeline: (id: string) =>
     get<{ experiments: TimelinePoint[] }>(`/api/timeline?hypothesis_id=${encodeURIComponent(id)}`),

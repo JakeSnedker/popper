@@ -67,6 +67,7 @@ def publish(state: dict[str, Any], force: bool = False) -> str | None:
         "dataset_id": settings.dataset_id,
         "switch": str(state.get("switch") or "on"),
         "switch_requested_at": state.get("switch_requested_at"),
+        "exploit": str(state.get("exploit") or "on"),
         "last_error": state.get("last_error"),
         "started_at": state.get("started_at"),
         "heartbeat_at": _now(),
@@ -106,10 +107,17 @@ def fleet(stale_after_seconds: int = 300) -> list[dict[str, Any]]:
             age = None
         row["seconds_since_heartbeat"] = None if age is None else int(age)
         row["switch"] = str(row.get("switch") or "on")
+        row["exploit"] = str(row.get("exploit") or "on")
+        # ONLINE means "the machine is reporting", which is a different question
+        # from "is it researching": a parked node still heartbeats, and that is
+        # exactly what tells an operator the computer is on and reachable.
+        row["online"] = age is not None and age <= stale_after_seconds
         row["healthy"] = (
-            age is not None
-            and age <= stale_after_seconds
+            row["online"]
             and str(row.get("status")) not in {"stopped", "crashed", "unknown"}
+        )
+        row["requeue_pending"] = bool(
+            row.get("requeue_requested_at") and not row.get("requeue_finished_at")
         )
     return rows
 
@@ -128,6 +136,65 @@ def set_switch(machine_id: str, value: str) -> str | None:
             {"p_machine_id": machine_id, "p_switch": value},
         ).execute()
     except Exception as exc:  # noqa: BLE001 - never let a toggle 500 the dashboard
+        return f"{type(exc).__name__}: {' '.join(str(exc).split())[:300]}"
+    return None
+
+
+def set_exploit(machine_id: str, value: str) -> str | None:
+    """Toggle a node's CPU-only exploit engine. Returns an error string, or None."""
+    if not enabled():
+        return None
+    if value not in {"on", "off"}:
+        return f"exploit must be on or off, got {value!r}"
+    try:
+        _get_client().rpc(
+            "popper_set_node_exploit",
+            {"p_machine_id": machine_id, "p_exploit": value},
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 - never let a toggle 500 the dashboard
+        return f"{type(exc).__name__}: {' '.join(str(exc).split())[:300]}"
+    return None
+
+
+def request_requeue(machine_id: str) -> str | None:
+    """Ask a node to sweep the shared stranded backlog. Returns an error, or None."""
+    if not enabled():
+        return None
+    try:
+        _get_client().rpc(
+            "popper_request_node_requeue", {"p_machine_id": machine_id},
+        ).execute()
+    except Exception as exc:  # noqa: BLE001
+        return f"{type(exc).__name__}: {' '.join(str(exc).split())[:300]}"
+    return None
+
+
+def read_node_flags(machine_id: str) -> dict[str, Any]:
+    """This machine's remote switch/exploit/requeue state ({} if unknown)."""
+    if not enabled():
+        return {}
+    try:
+        rows = (
+            _get_client().table("node_status")
+            .select("switch,exploit,requeue_requested_at,requeue_finished_at")
+            .eq("machine_id", machine_id).execute().data
+        )
+    except Exception:  # noqa: BLE001 - best-effort mirroring
+        return {}
+    return rows[0] if rows else {}
+
+
+def finish_requeue(machine_id: str, result: str) -> str | None:
+    """Record the outcome of a requeue sweep this node just ran."""
+    if not enabled():
+        return None
+    try:
+        _get_client().table("node_status").update({
+            "requeue_finished_at": _now(),
+            "requeue_result": result[:300],
+            "updated_at": _now(),
+        }).eq("machine_id", machine_id).execute()
+    except Exception as exc:  # noqa: BLE001
         return f"{type(exc).__name__}: {' '.join(str(exc).split())[:300]}"
     return None
 

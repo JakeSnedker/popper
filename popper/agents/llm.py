@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -37,8 +38,14 @@ _RATE_MARKERS = (
     "rate limit", "rate_limit", "too many requests", "usage limit", "quota",
     "capacity", "resets at", "you've hit your limit", "429",
 )
-_CODEX_EXECUTABLE = "codex.cmd" if os.name == "nt" else "codex"
-_OPENCODE_EXECUTABLE = "opencode.cmd" if os.name == "nt" else "opencode"
+# Resolved, not guessed: an npm global install leaves only `name.cmd` on Windows
+# and CreateProcess only ever appends `.exe`, so a bare "claude"/"codex" raises
+# FileNotFoundError on a machine where the CLI works fine in the terminal. Falls
+# back to the bare name so the existing FileNotFoundError path still reports
+# "not installed" instead of crashing at import.
+_CLAUDE_EXECUTABLE = shutil.which("claude") or "claude"
+_CODEX_EXECUTABLE = shutil.which("codex") or "codex"
+_OPENCODE_EXECUTABLE = shutil.which("opencode") or "opencode"
 _KNOWN_PROVIDERS = {"claude_cli", "codex_cli", "opencode_cli"}
 # Model to use for a role when the operator owns only this provider and the
 # configured route named nobody else they have.
@@ -225,7 +232,7 @@ class ClaudeCliClient(_MeasuredClient):
         env = {k: v for k, v in os.environ.items()
                if k not in ("ANTHROPIC_API_KEY", "POPPER_ANTHROPIC_API_KEY")}
         command = [
-            "claude", "-p", "--model", _claude_model(model),
+            _CLAUDE_EXECUTABLE, "-p", "--model", _claude_model(model),
             "--system-prompt", system,
             "--tools", "",
             "--disable-slash-commands",

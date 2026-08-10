@@ -13,6 +13,10 @@ class SwitchRequest(BaseModel):
     switch: str = Field(pattern="^(on|off)$")
 
 
+class ExploitRequest(BaseModel):
+    exploit: str = Field(pattern="^(on|off)$")
+
+
 @router.get("")
 def list_nodes(user: TeamPrincipal = Depends(require_team_user)) -> dict:
     """Every operator machine and whether its heartbeat is recent.
@@ -50,3 +54,42 @@ def set_node_switch(
     if error:
         raise HTTPException(status_code=502, detail=error)
     return {"machine_id": machine_id, "switch": req.switch, "ok": True}
+
+
+@router.post("/{machine_id}/exploit")
+def set_node_exploit(
+    machine_id: str,
+    req: ExploitRequest,
+    user: TeamPrincipal = Depends(require_team_user),
+) -> dict:
+    """Toggle a node's CPU-only exploit engine, independently of its on/off switch.
+
+    Exploit refinement burns cores but no subscription quota, so an operator
+    parks it when they want their machine back without stopping research.
+    """
+    if user.role == "viewer":
+        raise HTTPException(status_code=403, detail="viewer accounts cannot toggle nodes")
+    error = node_presence.set_exploit(machine_id, req.exploit)
+    if error:
+        raise HTTPException(status_code=502, detail=error)
+    return {"machine_id": machine_id, "exploit": req.exploit, "ok": True}
+
+
+@router.post("/{machine_id}/requeue")
+def request_node_requeue(
+    machine_id: str,
+    user: TeamPrincipal = Depends(require_team_user),
+) -> dict:
+    """Ask this node to sweep the shared stranded-hypothesis backlog.
+
+    The backlog is fleet-wide, not per-node: nothing records which machine
+    stranded a hypothesis. Choosing a node chooses which machine does the work.
+    The node picks the request up on its next loop, so a parked or offline
+    machine simply acts on it when it next runs.
+    """
+    if user.role == "viewer":
+        raise HTTPException(status_code=403, detail="viewer accounts cannot control nodes")
+    error = node_presence.request_requeue(machine_id)
+    if error:
+        raise HTTPException(status_code=502, detail=error)
+    return {"machine_id": machine_id, "requeue_requested": True, "ok": True}

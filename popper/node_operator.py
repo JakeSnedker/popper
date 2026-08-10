@@ -31,6 +31,7 @@ class NodePaths:
     node_log: Path
     hunt_log: Path
     switch_file: Path
+    exploit_file: Path
 
     @classmethod
     def for_root(cls, root: Path = REPO_ROOT) -> "NodePaths":
@@ -50,6 +51,7 @@ class NodePaths:
             node_log=logs_dir / "node.jsonl",
             hunt_log=logs_dir / "hunt.log",
             switch_file=state_dir / "switch",
+            exploit_file=state_dir / "exploit",
         )
 
     def ensure(self) -> None:
@@ -180,7 +182,11 @@ def current_release(root: Path = REPO_ROOT) -> str | None:
                 return None
             identity = commit.stdout.strip()
         status = subprocess.run(
-            ["git", "status", "--porcelain"],
+            # Untracked files are not a source change, and the likeliest one on an
+            # operator machine is the extracted dataset archive sitting in the repo
+            # folder. Counting it turned a good release into "-dirty" and hard-failed
+            # preflight with a message naming two identical-looking versions.
+            ["git", "status", "--porcelain", "--untracked-files=no"],
             cwd=root,
             capture_output=True,
             text=True,
@@ -238,6 +244,26 @@ def write_switch(paths: NodePaths, value: str) -> None:
     if value not in {"on", "off"}:
         raise ValueError(f"switch must be 'on' or 'off', got {value!r}")
     paths.switch_file.write_text(value, encoding="ascii")
+
+
+def read_exploit(paths: NodePaths) -> str:
+    """Return 'on' or 'off'. A missing exploit file defaults to 'on'.
+
+    Independent of the on/off switch: exploit refinement is CPU-only, so an
+    operator turns it off to get their cores back while still contributing
+    LLM-driven exploration.
+    """
+    try:
+        value = paths.exploit_file.read_text(encoding="ascii").strip().lower()
+    except OSError:
+        return "on"
+    return value if value in {"on", "off"} else "on"
+
+
+def write_exploit(paths: NodePaths, value: str) -> None:
+    if value not in {"on", "off"}:
+        raise ValueError(f"exploit must be 'on' or 'off', got {value!r}")
+    paths.exploit_file.write_text(value, encoding="ascii")
 
 
 def clear_stop(paths: NodePaths) -> None:

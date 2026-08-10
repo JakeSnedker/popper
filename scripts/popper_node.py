@@ -24,10 +24,12 @@ from popper.node_operator import (
     inspect_dataset,
     parse_retry_after,
     process_exists,
+    read_exploit,
     read_json,
     read_switch,
     status_snapshot,
     utc_now,
+    write_exploit,
     write_json_atomic,
     write_switch,
 )
@@ -35,6 +37,9 @@ from popper.node_operator import (
 
 CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0)
+# One dashboard requeue request re-tests at most this many stranded
+# hypotheses, so a sweep cannot monopolise a node for hours.
+REQUEUE_LIMIT = 25
 
 
 def _dataset_dir() -> Path:
@@ -113,7 +118,10 @@ def _check_subscriptions() -> str:
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        timeout=90,
+        # Three CLI probes at up to 30s each, plus interpreter start. 90s made a
+        # cold first run on a new operator machine fail as "LLM providers" when
+        # the CLIs were merely slow to answer.
+        timeout=180,
     )
     safe = " | ".join(line.strip() for line in result.stdout.splitlines() if line.strip())
     if result.returncode != 0:
@@ -209,19 +217,56 @@ def _switch_on(paths: NodePaths) -> bool:
     return read_switch(paths) == "on"
 
 
-def _sync_remote_switch(paths: NodePaths) -> None:
-    """Mirror the shared fleet switch for THIS machine into the local switch
-    file, so a GUI toggle on another computer takes effect here.
+def _exploit_on(paths: NodePaths) -> bool:
+    return read_exploit(paths) == "on"
 
-    Local CLI toggles write the file first, then publish their switch to the
-    fleet, so the remote value is the shared source of truth. We only adopt a
-    remote value that read_node_switch actually returned (a missing remote row
-    means this node has not reported yet; leave the local file alone).
+
+def _sync_remote_switch(paths: NodePaths) -> None:
+    """Mirror the shared fleet flags for THIS machine into local files, so a GUI
+    toggle on another computer takes effect here.
+
+    Local CLI toggles write the file first, then publish to the fleet, so the
+    remote value is the shared source of truth. Only values the query actually
+    returned are adopted (a missing remote row means this node has not reported
+    yet; leave the local files alone).
     """
-    value = node_presence.read_node_switch(settings.machine_id) if node_presence.enabled() else None
+    flags = node_presence.read_node_flags(settings.machine_id) if node_presence.enabled() else {}
+    if not flags:
+        return
+    value = flags.get("switch")
     if value in {"on", "off"} and value != read_switch(paths):
         write_switch(paths, value)
         append_node_log(paths, "switch_sync", f"Adopted remote switch {value}")
+    exploit = flags.get("exploit")
+    if exploit in {"on", "off"} and exploit != read_exploit(paths):
+        write_exploit(paths, exploit)
+        append_node_log(paths, "exploit_sync", f"Adopted remote exploit {exploit}")
+    if flags.get("requeue_requested_at") and not flags.get("requeue_finished_at"):
+        _run_requeue(paths)
+
+
+def _run_requeue(paths: NodePaths) -> None:
+    """Sweep the shared stranded-hypothesis backlog because the dashboard asked.
+
+    The backlog is fleet-wide: nothing records which machine stranded a
+    hypothesis, so picking a node picks who does the work, not whose work it is.
+    Bounded per sweep so one request cannot monopolise a node for hours.
+    """
+    append_node_log(paths, "requeue_start", "Requeue requested from the dashboard")
+    _update_state(paths, publish=True, status="requeue", heartbeat_at=utc_now())
+    try:
+        from popper.research.requeue import requeue
+
+        summary = requeue(limit=REQUEUE_LIMIT)
+        verdicts = summary.get("verdicts") or {}
+        result = (f"re-tested {sum(verdicts.values())} "
+                  f"({', '.join(f'{k}={v}' for k, v in sorted(verdicts.items())) or 'none'}); "
+                  f"{summary.get('orphaned', 0)} need re-synthesis; "
+                  f"{len(summary.get('failed') or [])} failed")
+    except Exception as exc:  # noqa: BLE001 - a bad sweep must not kill the node
+        result = f"requeue failed: {type(exc).__name__}: {exc}"
+    append_node_log(paths, "requeue_done", result)
+    node_presence.finish_requeue(settings.machine_id, result)
 
 
 def _wait_until_allowed(paths: NodePaths, seconds: int) -> bool:
@@ -328,6 +373,10 @@ def run_worker(minutes: float, iterations: int, mode: str,
                 _wait_for_resume(paths)
                 continue
 
+            # Exploit refinement is the CPU-heavy half and makes no LLM calls, so
+            # switching it off means "keep proposing, give me my cores back" —
+            # explore/wildcard only, rather than stopping the node.
+            hunt_mode = mode if _exploit_on(paths) else "explore"
             command = [
                 sys.executable,
                 str(REPO_ROOT / "scripts" / "run_hunt.py"),
@@ -336,10 +385,10 @@ def run_worker(minutes: float, iterations: int, mode: str,
                 "--iterations",
                 str(iterations),
                 "--mode",
-                mode,
+                hunt_mode,
             ]
             with paths.hunt_log.open("a", encoding="utf-8", buffering=1) as log:
-                log.write(f"\n[{utc_now()}] starting hunt\n")
+                log.write(f"\n[{utc_now()}] starting hunt (mode={hunt_mode})\n")
                 child = subprocess.Popen(
                     command,
                     cwd=REPO_ROOT,
@@ -562,11 +611,29 @@ def set_switch(value: str) -> int:
     return 0
 
 
+def set_exploit(value: str) -> int:
+    """Persist the CPU-only exploit engine toggle. OFF keeps the node proposing
+    new hypotheses but stops it refining survivors, freeing the cores."""
+    paths = NodePaths.for_root(REPO_ROOT)
+    paths.ensure()
+    write_exploit(paths, value)
+    append_node_log(paths, "exploit_set", f"Operator exploit set to {value}")
+    error = node_presence.set_exploit(settings.machine_id, value)
+    _update_state(paths, publish=True, exploit=value)
+    print(f"Popper exploit engine is now {value.upper()}.")
+    if value == "off":
+        print("The next hunt will explore only; survivor refinement is paused.")
+    if error:
+        print(f"Note: fleet sync reported: {error}")
+    return 0
+
+
 def print_status(as_json: bool) -> int:
     paths = NodePaths.for_root(REPO_ROOT)
     state = status_snapshot(paths)
     preflight = read_json(paths.preflight_file)
-    value = {**state, "switch": read_switch(paths), "preflight_ok": preflight.get("ok"), "paths": {
+    value = {**state, "switch": read_switch(paths), "exploit": read_exploit(paths),
+             "preflight_ok": preflight.get("ok"), "paths": {
         "state": str(paths.state_file),
         "node_log": str(paths.node_log),
         "hunt_log": str(paths.hunt_log),
@@ -624,6 +691,17 @@ def main() -> int:
     switch = commands.add_parser("switch", help="turn the node on or off (off parks after the current hunt)")
     switch.add_argument("value", choices=("on", "off"))
 
+    exploit = commands.add_parser(
+        "exploit",
+        help="turn the CPU-only survivor-refinement engine on or off (node keeps exploring)",
+    )
+    exploit.add_argument("value", choices=("on", "off"))
+
+    commands.add_parser(
+        "requeue",
+        help="sweep the shared backlog of hypotheses stranded between synthesis and verdict",
+    )
+
     args = parser.parse_args()
     if args.command == "preflight":
         result = run_preflight(full_dataset=args.full_dataset)
@@ -642,6 +720,11 @@ def main() -> int:
         return print_status(args.json)
     if args.command == "switch":
         return set_switch(args.value)
+    if args.command == "exploit":
+        return set_exploit(args.value)
+    if args.command == "requeue":
+        _run_requeue(NodePaths.for_root(REPO_ROOT))
+        return 0
     return 2
 
 
