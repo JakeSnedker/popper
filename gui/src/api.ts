@@ -115,6 +115,11 @@ export const api = {
       `/api/fleet/${encodeURIComponent(machineId)}/exploit`,
       { exploit }
     ),
+  setNodeProviders: (machineId: string, providersOff: string[]) =>
+    post<{ machine_id: string; providers_off: string[]; ok: boolean }>(
+      `/api/fleet/${encodeURIComponent(machineId)}/providers`,
+      { providers_off: providersOff }
+    ),
   requeueNode: (machineId: string) =>
     post<{ machine_id: string; requeue_requested: boolean; ok: boolean }>(
       `/api/fleet/${encodeURIComponent(machineId)}/requeue`,

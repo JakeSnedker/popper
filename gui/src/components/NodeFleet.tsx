@@ -78,6 +78,75 @@ function Toggle({
   );
 }
 
+// The node switch is all-or-nothing. These are the middle ground: park just the
+// subscription you want back for your own work and keep contributing on the rest.
+const PROVIDERS: { key: string; label: string }[] = [
+  { key: "claude_cli", label: "CLAUDE" },
+  { key: "codex_cli", label: "CHATGPT" },
+  { key: "opencode_cli", label: "DEEPSEEK" },
+];
+
+function ProviderToggles({ node, onDone }: { node: FleetNode; onDone: () => void }) {
+  const { canWrite } = useAuth();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const parked = new Set(
+    (node.providers_off ?? "").split(",").map((s) => s.trim()).filter(Boolean)
+  );
+  const enabled = canWrite && node.can_toggle;
+
+  async function flip(key: string) {
+    setBusy(key);
+    setError(null);
+    const next = new Set(parked);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    try {
+      await api.setNodeProviders(node.machine_id, [...next]);
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-0.5 shrink-0">
+      <div className="flex gap-1">
+        {PROVIDERS.map(({ key, label }) => {
+          const on = !parked.has(key);
+          return (
+            <button
+              key={key}
+              onClick={() => flip(key)}
+              disabled={!enabled || busy !== null}
+              title={
+                enabled
+                  ? on
+                    ? `Park ${label} on this node and keep the others running`
+                    : `Resume ${label} on this node`
+                  : "Read-only in viewer mode"
+              }
+              className={`rounded px-1.5 py-1 text-[9px] font-semibold transition ${
+                enabled ? "hover:brightness-125 cursor-pointer" : "cursor-not-allowed opacity-40"
+              } ${on ? "bg-sky-600/20 text-sky-300" : "bg-slate-700 text-slate-500 line-through"}`}
+            >
+              {busy === key ? "..." : label}
+            </button>
+          );
+        })}
+      </div>
+      {error && (
+        <span className="text-[9px] text-rose-400 max-w-[9rem] truncate" title={error}>
+          {error}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function RequeueButton({ node, onDone }: { node: FleetNode; onDone: () => void }) {
   const { canWrite } = useAuth();
   const [busy, setBusy] = useState(false);
@@ -193,6 +262,7 @@ export function NodeFleet() {
               }
               onDone={reload}
             />
+            <ProviderToggles node={node} onDone={reload} />
             <RequeueButton node={node} onDone={reload} />
             <span className="text-[10px] text-slate-500 shrink-0 w-16 text-right">
               {age(node.seconds_since_heartbeat)}

@@ -17,6 +17,10 @@ class ExploitRequest(BaseModel):
     exploit: str = Field(pattern="^(on|off)$")
 
 
+class ProvidersRequest(BaseModel):
+    providers_off: list[str] = Field(default_factory=list)
+
+
 @router.get("")
 def list_nodes(user: TeamPrincipal = Depends(require_team_user)) -> dict:
     """Every operator machine and whether its heartbeat is recent.
@@ -73,6 +77,27 @@ def set_node_exploit(
     if error:
         raise HTTPException(status_code=502, detail=error)
     return {"machine_id": machine_id, "exploit": req.exploit, "ok": True}
+
+
+@router.post("/{machine_id}/providers")
+def set_node_providers(
+    machine_id: str,
+    req: ProvidersRequest,
+    user: TeamPrincipal = Depends(require_team_user),
+) -> dict:
+    """Park individual LLM providers on a node without stopping it.
+
+    An operator who wants Claude back for their own work can park just Claude
+    and keep contributing on ChatGPT and DeepSeek. Parking every provider is
+    accepted here and made safe on the node, which falls back to its full
+    detected set rather than stranding itself with no route.
+    """
+    if user.role == "viewer":
+        raise HTTPException(status_code=403, detail="viewer accounts cannot toggle nodes")
+    error = node_presence.set_providers(machine_id, req.providers_off)
+    if error:
+        raise HTTPException(status_code=502, detail=error)
+    return {"machine_id": machine_id, "providers_off": sorted(req.providers_off), "ok": True}
 
 
 @router.post("/{machine_id}/requeue")

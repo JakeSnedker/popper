@@ -10,11 +10,13 @@ failed. Failures are returned to the caller for local logging, not raised.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timezone
 import threading
 from typing import Any
 
 from popper.config import settings
+from popper.node_operator import KNOWN_PROVIDERS
 
 # ponytail: one client reused per process, guarded by a lock. Worker heartbeats
 # are ~1/min from a single thread; a pool would be ceremony.
@@ -68,6 +70,7 @@ def publish(state: dict[str, Any], force: bool = False) -> str | None:
         "switch": str(state.get("switch") or "on"),
         "switch_requested_at": state.get("switch_requested_at"),
         "exploit": str(state.get("exploit") or "on"),
+        "providers_off": ",".join(sorted(state.get("providers_off") or [])),
         "last_error": state.get("last_error"),
         "started_at": state.get("started_at"),
         "heartbeat_at": _now(),
@@ -156,6 +159,29 @@ def set_exploit(machine_id: str, value: str) -> str | None:
     return None
 
 
+def set_providers(machine_id: str, parked: Iterable[str]) -> str | None:
+    """Park a set of LLM providers on a node. Returns an error string, or None.
+
+    The node is the authority on whether the request is survivable: it only
+    ever subtracts parked names from the providers it actually detects, and
+    keeps its full set if the subtraction would empty it.
+    """
+    if not enabled():
+        return None
+    names = sorted({str(name).strip() for name in parked if str(name).strip()})
+    unknown = set(names) - KNOWN_PROVIDERS
+    if unknown:
+        return f"unknown LLM provider(s): {sorted(unknown)}"
+    try:
+        _get_client().rpc(
+            "popper_set_node_providers",
+            {"p_machine_id": machine_id, "p_providers_off": ",".join(names)},
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 - never let a toggle 500 the dashboard
+        return f"{type(exc).__name__}: {' '.join(str(exc).split())[:300]}"
+    return None
+
+
 def request_requeue(machine_id: str) -> str | None:
     """Ask a node to sweep the shared stranded backlog. Returns an error, or None."""
     if not enabled():
@@ -170,13 +196,14 @@ def request_requeue(machine_id: str) -> str | None:
 
 
 def read_node_flags(machine_id: str) -> dict[str, Any]:
-    """This machine's remote switch/exploit/requeue state ({} if unknown)."""
+    """This machine's remote switch/exploit/providers/requeue state ({} if unknown)."""
     if not enabled():
         return {}
     try:
         rows = (
             _get_client().table("node_status")
-            .select("switch,exploit,requeue_requested_at,requeue_finished_at")
+            .select("switch,exploit,providers_off,"
+                    "requeue_requested_at,requeue_finished_at")
             .eq("machine_id", machine_id).execute().data
         )
     except Exception:  # noqa: BLE001 - best-effort mirroring

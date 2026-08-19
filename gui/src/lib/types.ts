@@ -485,6 +485,8 @@ export interface FleetNode {
   healthy: boolean;
   switch: "on" | "off";
   exploit: "on" | "off";
+  // Comma-separated parked providers, "" when every detected provider runs.
+  providers_off?: string;
   can_toggle: boolean;
   operator_id?: string;
   // online = heartbeating at all (the machine is on and reachable).

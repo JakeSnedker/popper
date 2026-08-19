@@ -24,6 +24,7 @@ from popper.node_operator import (
     inspect_dataset,
     parse_retry_after,
     process_exists,
+    KNOWN_PROVIDERS,
     read_disabled_providers,
     read_exploit,
     read_json,
@@ -243,6 +244,13 @@ def _sync_remote_switch(paths: NodePaths) -> None:
     if exploit in {"on", "off"} and exploit != read_exploit(paths):
         write_exploit(paths, exploit)
         append_node_log(paths, "exploit_sync", f"Adopted remote exploit {exploit}")
+    if "providers_off" in flags:
+        remote = {name.strip() for name in str(flags.get("providers_off") or "").split(",")
+                  if name.strip() in KNOWN_PROVIDERS}
+        if remote != read_disabled_providers(paths):
+            write_disabled_providers(paths, remote)
+            append_node_log(paths, "providers_sync",
+                            f"Adopted remote parked providers {sorted(remote) or 'none'}")
     if flags.get("requeue_requested_at") and not flags.get("requeue_finished_at"):
         _run_requeue(paths)
 
@@ -642,7 +650,10 @@ def set_provider(name: str, value: str) -> int:
         if value == "off" and name in running:
             print("Note: that would have parked every provider, so nothing was "
                   "parked. To stop the node entirely use Popper-Toggle.cmd.")
+    error = node_presence.set_providers(settings.machine_id, parked)
     _update_state(paths, publish=True, providers_off=sorted(parked))
+    if error:
+        print(f"Note: fleet sync reported: {error}")
     return 0
 
 
@@ -751,6 +762,7 @@ def print_status(as_json: bool) -> int:
     state = status_snapshot(paths)
     preflight = read_json(paths.preflight_file)
     value = {**state, "switch": read_switch(paths), "exploit": read_exploit(paths),
+             "providers_off": sorted(read_disabled_providers(paths)),
              "preflight_ok": preflight.get("ok"), "paths": {
         "state": str(paths.state_file),
         "node_log": str(paths.node_log),
