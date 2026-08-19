@@ -24,11 +24,13 @@ from popper.node_operator import (
     inspect_dataset,
     parse_retry_after,
     process_exists,
+    read_disabled_providers,
     read_exploit,
     read_json,
     read_switch,
     status_snapshot,
     utc_now,
+    write_disabled_providers,
     write_exploit,
     write_json_atomic,
     write_switch,
@@ -611,6 +613,69 @@ def set_switch(value: str) -> int:
     return 0
 
 
+def set_provider(name: str, value: str) -> int:
+    """Park or resume one LLM provider on this machine.
+
+    Unlike the switch, this is deliberately local-first: an operator parking
+    Claude because they want Claude for their own work needs it to take effect
+    now, not after a round trip to Supabase.
+    """
+    paths = NodePaths.for_root(REPO_ROOT)
+    paths.ensure()
+    parked = read_disabled_providers(paths)
+    if value == "off":
+        parked.add(name)
+    else:
+        parked.discard(name)
+    write_disabled_providers(paths, parked)
+    append_node_log(paths, "provider_set", f"{name} set to {value}")
+
+    from popper.agents.llm import enabled_providers
+    try:
+        running = sorted(enabled_providers())
+    except Exception as exc:  # provider detection is best-effort for reporting
+        running = []
+        print(f"Note: could not confirm live providers ({exc}).")
+    print(f"{name} is now {value.upper()}.")
+    if running:
+        print(f"Running on: {', '.join(running)}")
+        if value == "off" and name in running:
+            print("Note: that would have parked every provider, so nothing was "
+                  "parked. To stop the node entirely use Popper-Toggle.cmd.")
+    _update_state(paths, publish=True, providers_off=sorted(parked))
+    return 0
+
+
+def print_providers(as_json: bool = False) -> int:
+    """Show which providers this machine has, and which are parked."""
+    paths = NodePaths.for_root(REPO_ROOT)
+    parked = read_disabled_providers(paths)
+    from popper.agents.subscriptions import detect_providers
+    try:
+        detected = set(detect_providers())
+    except Exception:
+        detected = set()
+    if as_json:
+        print(json.dumps({"detected": sorted(detected), "parked": sorted(parked),
+                          "running": sorted(detected - parked) or sorted(detected)},
+                         indent=2))
+        return 0
+    labels = {"claude_cli": "Claude", "codex_cli": "ChatGPT (Codex)",
+              "opencode_cli": "DeepSeek (OpenCode)"}
+    print(f"{'Provider':<20} {'Signed in':<11} State")
+    print("-" * 44)
+    for key in ("claude_cli", "codex_cli", "opencode_cli"):
+        have = "yes" if key in detected else "no"
+        if key not in detected:
+            state = "-"
+        elif key in parked:
+            state = "PARKED"
+        else:
+            state = "running"
+        print(f"{labels[key]:<20} {have:<11} {state}")
+    return 0
+
+
 def set_exploit(value: str) -> int:
     """Persist the CPU-only exploit engine toggle. OFF keeps the node proposing
     new hypotheses but stops it refining survivors, freeing the cores."""
@@ -750,6 +815,15 @@ def main() -> int:
     )
     exploit.add_argument("value", choices=("on", "off"))
 
+    providers = commands.add_parser(
+        "providers",
+        help="park or resume one LLM provider on this machine (no argument lists them)",
+    )
+    providers.add_argument("name", nargs="?",
+                           choices=("claude_cli", "codex_cli", "opencode_cli"))
+    providers.add_argument("value", nargs="?", choices=("on", "off"))
+    providers.add_argument("--json", action="store_true")
+
     commands.add_parser(
         "requeue",
         help="sweep the shared backlog of hypotheses stranded between synthesis and verdict",
@@ -782,6 +856,13 @@ def main() -> int:
         return set_switch(args.value)
     if args.command == "exploit":
         return set_exploit(args.value)
+    if args.command == "providers":
+        if not args.name:
+            return print_providers(args.json)
+        if not args.value:
+            print("Specify on or off, e.g. popper_node.py providers claude_cli off")
+            return 2
+        return set_provider(args.name, args.value)
     if args.command == "data":
         return print_data(args.json, args.search)
     if args.command == "requeue":

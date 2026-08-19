@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from collections.abc import Iterable
 from typing import Any
 
 
@@ -32,6 +33,7 @@ class NodePaths:
     hunt_log: Path
     switch_file: Path
     exploit_file: Path
+    providers_file: Path
 
     @classmethod
     def for_root(cls, root: Path = REPO_ROOT) -> "NodePaths":
@@ -52,6 +54,7 @@ class NodePaths:
             hunt_log=logs_dir / "hunt.log",
             switch_file=state_dir / "switch",
             exploit_file=state_dir / "exploit",
+            providers_file=state_dir / "providers.off",
         )
 
     def ensure(self) -> None:
@@ -244,6 +247,33 @@ def write_switch(paths: NodePaths, value: str) -> None:
     if value not in {"on", "off"}:
         raise ValueError(f"switch must be 'on' or 'off', got {value!r}")
     paths.switch_file.write_text(value, encoding="ascii")
+
+
+KNOWN_PROVIDERS = ("claude_cli", "codex_cli", "opencode_cli")
+
+
+def read_disabled_providers(paths: NodePaths) -> set[str]:
+    """Providers the operator has parked on this machine.
+
+    Stores the DISABLED set, not the enabled one, so a missing file means
+    "nothing parked" — the same default-to-running rule the switch uses. The
+    node can only ever subtract from what it actually detects, so a stale name
+    in here is inert rather than dangerous.
+    """
+    try:
+        raw = paths.providers_file.read_text(encoding="ascii")
+    except OSError:
+        return set()
+    return {name.strip() for name in raw.split(",") if name.strip() in KNOWN_PROVIDERS}
+
+
+def write_disabled_providers(paths: NodePaths, names: Iterable[str]) -> None:
+    wanted = {str(name).strip() for name in names if str(name).strip()}
+    unknown = wanted - set(KNOWN_PROVIDERS)
+    if unknown:
+        raise ValueError(f"unknown LLM provider(s): {sorted(unknown)}")
+    paths.providers_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.providers_file.write_text(",".join(sorted(wanted)), encoding="ascii")
 
 
 def read_exploit(paths: NodePaths) -> str:

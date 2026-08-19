@@ -730,11 +730,33 @@ class LLMRouter:
         }
 
 
+def _parked_providers() -> set[str]:
+    """Providers the operator has parked from the dashboard or Popper-Providers.
+
+    Reading node state from the router is a layering compromise, but it is the
+    only place every route resolution already passes through, so one read here
+    beats a parked provider leaking past a caller that forgot to filter.
+    """
+    try:
+        from popper.node_operator import NodePaths, read_disabled_providers
+    except ImportError:  # pragma: no cover - node layer absent in bare API use
+        return set()
+    try:
+        return read_disabled_providers(NodePaths.for_root())
+    except OSError:
+        return set()
+
+
 def enabled_providers() -> set[str]:
     """Zero-marginal-cost CLI routes this node may use.
 
     "auto" detects subscription OAuth plus the approved free OpenCode model.
     An explicit list is honoured but cannot invent an unknown provider.
+
+    Whatever survives that, the operator's parked set is subtracted last —
+    except that parking is never allowed to empty the node. An operator who
+    parks everything gets their last provider back rather than a node that
+    cannot run, because "give me my machine" is what the switch is for.
     """
     configured = settings.llm_providers.strip()
     if configured.lower() == "auto":
@@ -745,14 +767,18 @@ def enabled_providers() -> set[str]:
                 "(`claude`) or ChatGPT (`codex login`), or update `opencode` for "
                 "its free DeepSeek model before starting a node"
             )
-        return set(detected)
-    names = {part.strip() for part in configured.split(",") if part.strip()}
-    unknown = names - _KNOWN_PROVIDERS
-    if unknown:
-        raise ValueError(f"unknown LLM provider(s) in POPPER_LLM_PROVIDERS: {sorted(unknown)}")
-    if not names:
-        raise ValueError("POPPER_LLM_PROVIDERS cannot be empty")
-    return names
+        names = set(detected)
+    else:
+        names = {part.strip() for part in configured.split(",") if part.strip()}
+        unknown = names - _KNOWN_PROVIDERS
+        if unknown:
+            raise ValueError(
+                f"unknown LLM provider(s) in POPPER_LLM_PROVIDERS: {sorted(unknown)}"
+            )
+        if not names:
+            raise ValueError("POPPER_LLM_PROVIDERS cannot be empty")
+    running = names - _parked_providers()
+    return running or names
 
 
 def _for_this_node(role: str, targets: list[RouteTarget], allowed: set[str]) -> list[RouteTarget]:
