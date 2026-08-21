@@ -142,7 +142,10 @@ class Context(BaseModel):
 class StrategySpec(BaseModel):
     id: str | None = None  # assigned by alpha memory as S-#### if absent
     hypothesis_id: str
-    dsl_version: str = "0.3"
+    # 0.4 added alpha.direction, limit/stop entries and wrapper.time_stop. The
+    # emitted Pine and MQL5 headers carry this, so a stale value mislabels a
+    # deployed artifact as something the tooling never produced.
+    dsl_version: str = "0.4"
     name: str
     alpha: Alpha
     wrapper: Wrapper = Field(default_factory=Wrapper)
