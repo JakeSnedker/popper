@@ -8,6 +8,7 @@ from popper.artifacts import StrategySpec
 from popper.config import settings
 from popper.dsl import DSLValidationError, validate_spec
 from popper.dsl.features import FEATURES
+from popper.dsl.features.domains import prompt_table
 from popper.dsl.validator import validate_local_data_context
 
 SYSTEM = (
@@ -32,6 +33,10 @@ SYSTEM = (
     "the mechanism is genuinely one-sided, set direction: long_only or short_only and give "
     "a direction_rationale saying why the edge cannot exist on the other side. For "
     "short_only put the condition in signal and leave signal_short unset. "
+    "RANGES: every comparison must be possible given the feature's stated range. "
+    "Do not compare a PRICE feature to a small number, do not compare a POINTS "
+    "distance to a PRICE, and do not test a 0/1 flag for a negative value. "
+    "Prefer 3-5 conditions per signal: eight ANDed conditions almost never fire together. "
     "Return YAML only."
 )
 
@@ -41,7 +46,12 @@ def _prompt(hypothesis) -> str:
         f"Hypothesis: {hypothesis.claim}",
         f"Mechanism: {hypothesis.mechanism}",
         f"Mandatory signal features: {', '.join(hypothesis.required_features) or 'choose minimally'}",
-        f"Feature library: {', '.join(FEATURES)}; ema_<n> is allowed.",
+        # A bare list of names is what produced `bb_line < 0.2` (a ~40,000 price),
+        # `trend_regime < 0` (it is 0 or 1) and `atr_14 > ema_50` (points vs price).
+        # Roughly a third of all hypotheses fired zero signals because of it.
+        "Feature library -- NAME RANGE - meaning. Respect these ranges exactly; a "
+        "comparison outside a feature's range can never be true:",
+        prompt_table(),
         "Valid shape example:",
         "name: probe",
         "alpha:",
@@ -92,7 +102,7 @@ def synthesize(
                 raise ValueError("spec must be a YAML mapping")
             data["hypothesis_id"] = hypothesis.id or ""
             data.setdefault("name", f"synth_{hypothesis.id or 'spec'}")
-            spec = validate_spec(data, require_direction=True)
+            spec = validate_spec(data, strict=True)
             if enforce_local_context:
                 spec = validate_local_data_context(spec)
             return validate_fidelity(hypothesis, spec, mode=mode)

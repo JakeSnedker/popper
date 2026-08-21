@@ -19,28 +19,28 @@ def _spec(**alpha):
 
 def test_direction_both_requires_a_short_signal():
     with pytest.raises(DSLValidationError) as e:
-        validate_spec(_spec(), require_direction=True)
+        validate_spec(_spec(), strict=True)
     assert any("signal_short is missing" in x for x in e.value.errors)
 
 
 def test_long_only_is_allowed_but_must_be_argued():
     with pytest.raises(DSLValidationError) as e:
-        validate_spec(_spec(direction="long_only"), require_direction=True)
+        validate_spec(_spec(direction="long_only"), strict=True)
     assert any("direction_rationale" in x for x in e.value.errors)
 
-    ok = validate_spec(_spec(direction="long_only", direction_rationale="overnight drift is up-only"), require_direction=True)
+    ok = validate_spec(_spec(direction="long_only", direction_rationale="overnight drift is up-only"), strict=True)
     assert ok.alpha.direction == "long_only"
 
 
 def test_long_only_may_not_also_carry_a_short_signal():
     with pytest.raises(DSLValidationError) as e:
         validate_spec(_spec(direction="long_only", direction_rationale="why",
-                            signal_short="close < ema_50"), require_direction=True)
+                            signal_short="close < ema_50"), strict=True)
     assert any("long_only" in x and "signal_short is set" in x for x in e.value.errors)
 
 
 def test_bidirectional_spec_passes():
-    spec = validate_spec(_spec(signal_short="close < ema_50"), require_direction=True)
+    spec = validate_spec(_spec(signal_short="close < ema_50"), strict=True)
     assert spec.alpha.direction == "both"
 
 

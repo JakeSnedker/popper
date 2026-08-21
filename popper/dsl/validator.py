@@ -15,6 +15,7 @@ import re
 
 from popper.artifacts.strategy_spec import StrategySpec
 from popper.dsl.expr import check_signal
+from popper.dsl.reachability import reachability_errors
 from popper.dsl.features import resolve_feature
 from popper.dsl.features.levels import LEVEL_FEATURES, LOSS_SIDE, PROFIT_SIDE
 from popper.data.timeframes import higher_feature_alias, normalize_timeframe, timeframe_minutes
@@ -157,12 +158,13 @@ def _direction_errors(spec: StrategySpec) -> list[str]:
     return errors
 
 
-def validate_spec(spec: StrategySpec | dict, require_direction: bool = False) -> StrategySpec:
+def validate_spec(spec: StrategySpec | dict, strict: bool = False) -> StrategySpec:
     """Returns the validated spec; raises DSLValidationError listing every problem.
 
-    `require_direction` enforces the bi-directional guardrail. It is OFF by
-    default so the pre-0.4 corpus and hand-written specs still validate, and ON
-    for freshly synthesised specs -- the agent is what was drifting long-only.
+    `strict` holds a spec to the full v0.4 contract: direction must be declared,
+    and no signal may be provably impossible. It is OFF by default so the pre-0.4
+    corpus and hand-written specs still validate, and ON for freshly synthesised
+    specs -- the agent is what produced both defects.
     """
     if isinstance(spec, dict):
         try:
@@ -177,8 +179,12 @@ def validate_spec(spec: StrategySpec | dict, require_direction: bool = False) ->
         if resolve_feature(f) is None:
             errors.append(f"unknown feature: {f!r}")
     errors += _higher_timeframe_errors(spec)
-    if require_direction:
+    if strict:
         errors += _direction_errors(spec)
+        errors += reachability_errors(spec.alpha.signal or "", spec.param_space, "alpha.signal")
+        errors += reachability_errors(
+            spec.alpha.signal_short or "", spec.param_space, "alpha.signal_short"
+        )
 
     # signals parse, use only declared names, and stay inside the bounded grammar
     used_params: set[str] = set()
