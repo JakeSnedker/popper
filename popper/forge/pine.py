@@ -48,21 +48,64 @@ def _validate(spec: StrategySpec) -> None:
 def _reject_unsupported(spec) -> None:
     """Refuse to emit code that would trade differently from the backtest.
 
-    v0.4 added resting entries and time exits to the DSL and the compiler. Until
-    an emitter renders them faithfully it must FAIL, never silently downgrade a
-    limit order to a market order -- that ships a strategy nobody tested.
+    Offset-priced resting entries and time exits are rendered below. An ANCHORED
+    resting order is not: its price is a level-feature series, and Pine
+    implements no level features at all -- the same reason `_validate` rejects a
+    level stop or target. Falling back to an offset price would deploy a
+    strategy nobody tested.
     """
-    w = spec.wrapper
-    if w.entry.type != "market":
-        raise NotImplementedError(
-            f"entry.type '{w.entry.type}' is backtestable but this emitter cannot render it yet; "
-            f"emitting a market entry instead would deploy a different strategy"
+    entry = spec.wrapper.entry
+    if entry.type != "market" and entry.anchor:
+        raise PineUnsupported(
+            f"Pine target cannot price a {entry.type} entry off level-feature "
+            f"{entry.anchor!r}: level features are not implemented for this target"
         )
-    if w.time_stop.type != "none":
-        raise NotImplementedError(
-            "wrapper.time_stop is backtestable but this emitter cannot render it yet; "
-            "emitting without it would deploy a different strategy"
-        )
+
+
+def _resting_entry_lines(entry) -> list[str]:
+    """A limit/stop order priced off the SIGNAL bar and live from the next one.
+
+    Mirrors the compiler: a limit rests at a BETTER price than the signal close
+    and a stop at a WORSE one; the order is cancelled once it has rested
+    `expiry_bars` bars; no new signal is taken while one is resting.
+    """
+    offset = _wrapper_value(entry.offset)
+    expiry = int(entry.expiry_bars)
+    keyword = "limit" if entry.type == "limit" else "stop"
+    long_sign, short_sign = ("-", "+") if entry.type == "limit" else ("+", "-")
+    return [
+        "var float signal_atr = na",
+        "var int rest_dir = 0",
+        "var int rest_bars = 0",
+        "var int filled_trades = 0",
+        "// a fill (or a trade opened and closed inside one bar) frees the slot; any",
+        "// other bar ages the resting order one step toward its expiry",
+        "total_trades = strategy.opentrades + strategy.closedtrades",
+        "if total_trades != filled_trades",
+        "    filled_trades := total_trades",
+        "    if rest_dir != 0",
+        "        entries_today += 1",
+        "    rest_dir := 0",
+        "    rest_bars := 0",
+        "else if rest_dir != 0",
+        "    rest_bars += 1",
+        f"    if rest_bars >= {expiry}",
+        '        strategy.cancel("Long")',
+        '        strategy.cancel("Short")',
+        "        rest_dir := 0",
+        "        rest_bars := 0",
+        "can_enter = strategy.position_size == 0 and rest_dir == 0 and (max_trades_per_day == 0 or entries_today < max_trades_per_day)",
+        "if can_enter and long_signal and not na(atr_14)",
+        "    signal_atr := atr_14",
+        "    rest_dir := 1",
+        "    rest_bars := 0",
+        f'    strategy.entry("Long", strategy.long, {keyword}=close {long_sign} {offset} * atr_14)',
+        "else if can_enter and short_signal and not na(atr_14)",
+        "    signal_atr := atr_14",
+        "    rest_dir := -1",
+        "    rest_bars := 0",
+        f'    strategy.entry("Short", strategy.short, {keyword}=close {short_sign} {offset} * atr_14)',
+    ]
 
 
 def generate_pine(spec: StrategySpec) -> str:
@@ -135,6 +178,7 @@ def generate_pine(spec: StrategySpec) -> str:
     short_signal = compile_expression(spec.alpha.signal_short, "pine") if spec.alpha.signal_short else "false"
     stop_mult = _wrapper_value(spec.wrapper.stop.mult)
     rr = _wrapper_value(spec.wrapper.target.ratio)
+    entry = spec.wrapper.entry
     lines += [
         "",
         f"long_signal = {long_signal}",
@@ -143,17 +187,26 @@ def generate_pine(spec: StrategySpec) -> str:
         "var int entries_today = 0",
         "if new_day",
         "    entries_today := 0",
-        "can_enter = strategy.position_size == 0 and (max_trades_per_day == 0 or entries_today < max_trades_per_day)",
-        "var float signal_atr = na",
-        "if can_enter and long_signal",
-        "    signal_atr := atr_14",
-        "    entries_today += 1",
-        '    strategy.entry("Long", strategy.long)',
-        "else if can_enter and short_signal",
-        "    signal_atr := atr_14",
-        "    entries_today += 1",
-        '    strategy.entry("Short", strategy.short)',
+    ]
+    if entry.type == "market":
+        lines += [
+            "can_enter = strategy.position_size == 0 and (max_trades_per_day == 0 or entries_today < max_trades_per_day)",
+            "var float signal_atr = na",
+            "if can_enter and long_signal",
+            "    signal_atr := atr_14",
+            "    entries_today += 1",
+            '    strategy.entry("Long", strategy.long)',
+            "else if can_enter and short_signal",
+            "    signal_atr := atr_14",
+            "    entries_today += 1",
+            '    strategy.entry("Short", strategy.short)',
+        ]
+    else:
+        lines += _resting_entry_lines(entry)
+    lines += [
         "",
+        # signal_atr is the SIGNAL bar's ATR, so a resting order that fills bars
+        # later still risks the distance the hypothesis was written with
         f"stop_distance = nz(signal_atr, atr_14) * {stop_mult}",
         f"reward_distance = stop_distance * {rr}",
         "if strategy.position_size > 0",
@@ -162,4 +215,14 @@ def generate_pine(spec: StrategySpec) -> str:
         '    strategy.exit("Short exit", "Short", stop=strategy.position_avg_price + stop_distance, limit=strategy.position_avg_price - reward_distance)',
         "",
     ]
+    if spec.wrapper.time_stop.type == "bars":
+        lines += [
+            # floor to whole bars: the compiler takes int(max_bars)
+            f"max_bars_in_trade = math.floor({_wrapper_value(spec.wrapper.time_stop.max_bars)})",
+            "// after the stop/target above, which run intrabar, so a bar that breaches",
+            "// the stop AND expires the clock is recorded as the stop",
+            "if strategy.position_size != 0 and (bar_index - strategy.opentrades.entry_bar_index(0)) >= max_bars_in_trade",
+            '    strategy.close_all(comment="time", immediately=true)',
+            "",
+        ]
     return "\n".join(lines)

@@ -44,20 +44,17 @@ def _validate(spec: StrategySpec) -> None:
 def _reject_unsupported(spec) -> None:
     """Refuse to emit code that would trade differently from the backtest.
 
-    v0.4 added resting entries and time exits to the DSL and the compiler. Until
-    an emitter renders them faithfully it must FAIL, never silently downgrade a
-    limit order to a market order -- that ships a strategy nobody tested.
+    Offset-priced resting entries and time exits are rendered below. An ANCHORED
+    resting order is not: its price is a level-feature series, and MQL5
+    implements no level features at all -- the same reason `_validate` rejects a
+    level stop or target. Falling back to an offset price would deploy a
+    strategy nobody tested.
     """
-    w = spec.wrapper
-    if w.entry.type != "market":
-        raise NotImplementedError(
-            f"entry.type '{w.entry.type}' is backtestable but this emitter cannot render it yet; "
-            f"emitting a market entry instead would deploy a different strategy"
-        )
-    if w.time_stop.type != "none":
-        raise NotImplementedError(
-            "wrapper.time_stop is backtestable but this emitter cannot render it yet; "
-            "emitting without it would deploy a different strategy"
+    entry = spec.wrapper.entry
+    if entry.type != "market" and entry.anchor:
+        raise Mql5Unsupported(
+            f"MQL5 target cannot price a {entry.type} entry off level-feature "
+            f"{entry.anchor!r}: level features are not implemented for this target"
         )
 
 
@@ -131,6 +128,134 @@ def generate_mql5(spec: StrategySpec) -> str:
         f"{name} == EMPTY_VALUE || !MathIsValidNumber({name})" for name in guard_names
     )
 
+    entry = spec.wrapper.entry
+    resting = entry.type != "market"
+    expiry_bars = int(entry.expiry_bars)
+    pending_globals = pending_helpers = ""
+    entry_calls = [
+        "   if(long_signal && OpenPosition(true, atr_14)) entries_today++;",
+        "   else if(short_signal && OpenPosition(false, atr_14)) entries_today++;",
+    ]
+    position_inner: list[str] = []
+    pending_lines: list[str] = []
+
+    if resting:
+        offset = _wrapper_value(entry.offset)
+        # a limit rests at a BETTER price than the signal close, a stop at a WORSE one
+        price_sign = "-" if entry.type == "limit" else "+"
+        through = ("market <= price : market >= price" if entry.type == "limit"
+                   else "market >= price : market <= price")
+        buy_fn, sell_fn = (("BuyLimit", "SellLimit") if entry.type == "limit"
+                           else ("BuyStop", "SellStop"))
+        comment = f"Popper {spec.id or ''}"
+        pending_globals = (
+            "\nulong pending_ticket = 0;"
+            "\ndouble pending_atr = 0.0;"
+            "\ndatetime managed_entry = 0;"
+        )
+        pending_helpers = f'''
+// A gap can fill a resting order better (limit) or worse (stop) than its price.
+// The backtest measures the stop from the FILL, so re-anchor once the fill is known.
+void RepriceStops(const double atr)
+{{
+   if(atr <= 0.0) return;
+   double fill = PositionGetDouble(POSITION_PRICE_OPEN);
+   bool is_long = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY;
+   double stop_distance = atr * {stop_mult};
+   double reward_distance = stop_distance * {rr};
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   trade.PositionModify(_Symbol,
+      NormalizeDouble(fill + (is_long ? -stop_distance : stop_distance), digits),
+      NormalizeDouble(fill + (is_long ? reward_distance : -reward_distance), digits));
+}}
+
+bool PlacePending(const bool is_long, const double atr, const double signal_close)
+{{
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double price = NormalizeDouble(signal_close {price_sign} (is_long ? 1.0 : -1.0) * {offset} * atr, digits);
+   double market = SymbolInfoDouble(_Symbol, is_long ? SYMBOL_ASK : SYMBOL_BID);
+   // price is already through the resting level: the backtest fills such a touch at
+   // the bar's open, so take it at market rather than let the broker reject it
+   if(is_long ? {through})
+   {{
+      if(!OpenPosition(is_long, atr)) return false;
+      pending_atr = atr;
+      return true;
+   }}
+   double stop_distance = atr * {stop_mult};
+   double reward_distance = stop_distance * {rr};
+   double lots = RiskLots(stop_distance);
+   if(lots <= 0.0) return false;
+   double stop = NormalizeDouble(price + (is_long ? -stop_distance : stop_distance), digits);
+   double target = NormalizeDouble(price + (is_long ? reward_distance : -reward_distance), digits);
+   ENUM_ORDER_TYPE_TIME time_type = ORDER_TIME_GTC;
+   datetime expiration = 0;
+   // broker-side backstop for when the EA is not running; the bar count in OnTick
+   // is what actually enforces expiry_bars
+   if((SymbolInfoInteger(_Symbol, SYMBOL_EXPIRATION_MODE) & SYMBOL_EXPIRATION_SPECIFIED) != 0)
+   {{
+      time_type = ORDER_TIME_SPECIFIED;
+      expiration = iTime(_Symbol, _Period, 0) + {expiry_bars} * PeriodSeconds();
+   }}
+   bool placed = is_long
+      ? trade.{buy_fn}(lots, price, _Symbol, stop, target, time_type, expiration, "{comment}")
+      : trade.{sell_fn}(lots, price, _Symbol, stop, target, time_type, expiration, "{comment}");
+   if(placed)
+   {{
+      pending_ticket = trade.ResultOrder();
+      pending_atr = atr;
+   }}
+   return placed;
+}}
+'''
+        entry_calls = [
+            "   if(long_signal) PlacePending(true, atr_14, close);",
+            "   else if(short_signal) PlacePending(false, atr_14, close);",
+        ]
+        position_inner += [
+            "      datetime opened = (datetime)PositionGetInteger(POSITION_TIME);",
+            "      if(opened != managed_entry)",
+            "      {",
+            "         managed_entry = opened;",
+            "         pending_ticket = 0;",
+            "         entries_today++;   // the backtest counts a trade when it FILLS",
+            "         RepriceStops(pending_atr);",
+            "         pending_atr = 0.0;",
+            "      }",
+        ]
+        pending_lines = [
+            "   if(pending_ticket != 0)",
+            "   {",
+            "      if(!OrderSelect(pending_ticket)) pending_ticket = 0;   // filled or already gone",
+            f"      else if(iBarShift(_Symbol, _Period, (datetime)OrderGetInteger(ORDER_TIME_SETUP)) >= {expiry_bars})",
+            "      {",
+            "         // rested its full life. The backtest can re-arm on this very bar, so",
+            "         // fall through to the signal below rather than returning.",
+            "         trade.OrderDelete(pending_ticket);",
+            "         pending_ticket = 0;",
+            "      }",
+            "      else return;   // still resting: no new signal while an order is live",
+            "   }",
+        ]
+
+    if spec.wrapper.time_stop.type == "bars":
+        max_bars = _wrapper_value(spec.wrapper.time_stop.max_bars)
+        position_inner += [
+            "      // completed bars since the fill. The broker stop/target run intrabar, so a",
+            "      // bar that breaches the stop AND expires the clock is already out as a stop.",
+            f"      if(iBarShift(_Symbol, _Period, (datetime)PositionGetInteger(POSITION_TIME)) - 1 >= (int){max_bars})",
+            "         trade.PositionClose(_Symbol);",
+        ]
+
+    position_lines = ["   if(PositionSelect(_Symbol)) return;"]
+    if position_inner:
+        position_lines = (["   if(PositionSelect(_Symbol))", "   {"]
+                          + position_inner + ["      return;", "   }"])
+    guard_block = "\n".join(
+        position_lines + pending_lines
+        + ["   if(InpMaxTradesPerDay > 0 && entries_today >= InpMaxTradesPerDay) return;", ""]
+    )
+
     return f'''// Generated by Popper Strategy Forge. Validate against Python before live use.
 // hypothesis_id={spec.hypothesis_id} spec_id={spec.id or "unstored"} dsl={spec.dsl_version}
 // Feed parity caveat: sessions, tick volume, CUSUM warmup, and broker fills can differ.
@@ -146,7 +271,7 @@ CTrade trade;
 {chr(10).join(handles)}
 datetime last_bar = 0;
 int entries_today = 0;
-int day_key = -1;
+int day_key = -1;{pending_globals}
 
 double Sign(const double value)
 {{
@@ -256,7 +381,7 @@ bool OpenPosition(const bool is_long, const double atr)
       ? trade.Buy(lots, _Symbol, 0.0, stop, target, "Popper {spec.id or ''}")
       : trade.Sell(lots, _Symbol, 0.0, stop, target, "Popper {spec.id or ''}");
 }}
-
+{pending_helpers}
 int OnInit()
 {{
 {chr(10).join(on_init)}
@@ -280,14 +405,11 @@ void OnTick()
    TimeToStruct(iTime(_Symbol, _Period, 1), bar_time);
    int current_day = bar_time.year * 1000 + bar_time.day_of_year;
    if(current_day != day_key) {{ day_key = current_day; entries_today = 0; }}
-   if(PositionSelect(_Symbol)) return;
-   if(InpMaxTradesPerDay > 0 && entries_today >= InpMaxTradesPerDay) return;
-
+{guard_block}
 {chr(10).join(feature_lines)}
    if({feature_guard} || atr_14 <= 0.0) return;
    bool long_signal = {long_signal};
    bool short_signal = {short_signal};
-   if(long_signal && OpenPosition(true, atr_14)) entries_today++;
-   else if(short_signal && OpenPosition(false, atr_14)) entries_today++;
+{chr(10).join(entry_calls)}
 }}
 '''
