@@ -20,4 +20,9 @@ echo.
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "try { $s = (Invoke-WebRequest -UseBasicParsing -Uri '%PS1_URL%').Content } catch { Write-Host ''; Write-Host 'Could not download the installer.' -ForegroundColor Red; Write-Host 'Check your internet connection and try again.' -ForegroundColor Yellow; Read-Host 'Press Enter to close'; exit 1 }; $f = Join-Path $env:TEMP 'popper-install.ps1'; Set-Content -LiteralPath $f -Value $s -Encoding UTF8; & $f"
 
+echo.
+echo   The installer has closed. If you saw an error above, send it to Jake.
+echo.
+pause
+
 endlocal

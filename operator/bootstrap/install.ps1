@@ -37,6 +37,18 @@ function Stop-With([string]$problem, [string]$fix) {
     exit 1
 }
 
+trap {
+    # Without this an unhandled error closes the window instantly and the
+    # operator sees a black flash and no folder. Show it and hold the window.
+    Write-Host ""
+    Write-Host "UNEXPECTED ERROR" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Nothing was left half-installed. Send this text to Jake."
+    Read-Host "Press Enter to close"
+    exit 1
+}
+
 function Update-PathFromRegistry {
     # winget puts new tools on PATH for NEW processes; this one already started.
     $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -140,7 +152,10 @@ $choice = (Read-Host "   Which do you have? (1-4)").Trim()
 
 function Install-Codex {
     Say "   installing the ChatGPT CLI ..."
-    npm install -g "@openai/codex" 2>&1 | Out-Null
+    & npm install -g "@openai/codex" --loglevel=error | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Stop-With "The ChatGPT CLI did not install." "Check your internet connection and run this again."
+    }
     Update-PathFromRegistry
     Say ""
     Say "   A browser will open. Choose 'Sign in with ChatGPT'." Yellow
@@ -151,7 +166,10 @@ function Install-Codex {
 
 function Install-Claude {
     Say "   installing the Claude CLI ..."
-    npm install -g "@anthropic-ai/claude-code" 2>&1 | Out-Null
+    & npm install -g "@anthropic-ai/claude-code" --loglevel=error | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Stop-With "The Claude CLI did not install." "Check your internet connection and run this again."
+    }
     Update-PathFromRegistry
     Say ""
     Say "   Sign in with your Claude.ai subscription, not an API key." Yellow
