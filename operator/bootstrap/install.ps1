@@ -14,7 +14,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Tag = "v0.2.4-alpha",
+    [string]$Tag = "v0.2.5-alpha",
     [string]$Path = "C:\Popper",
     [string]$Repo = "https://github.com/JakeSnedker/popper.git"
 )

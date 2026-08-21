@@ -1,10 +1,17 @@
 """Environment-driven configuration. No hardcoded secrets."""
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Anchor .env to the repo, not the working directory. A relative env_file is
+# resolved against CWD, so double-clicking operator\Popper-Preflight.cmd (CWD =
+# operator\) silently loaded NO configuration and failed four checks at once.
+ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="POPPER_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="POPPER_", env_file=ENV_FILE, extra="ignore")
 
     # store: "sqlite" (default, runs now) or "supabase" (production alpha memory)
     store: str = "sqlite"
