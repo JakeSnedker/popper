@@ -76,7 +76,21 @@ Say "  Popper node setup" Cyan
 Say "==============================================" Cyan
 Say ""
 Say "This turns this computer into a Popper research node."
-Say "It takes about 45 minutes, and most of that is downloads."
+Say ""
+
+# A re-run after a failure skips everything already done. Saying "45 minutes"
+# again makes operators think they are starting over, so measure and say so.
+$alreadyHasTools = (Have "python") -and (Have "git") -and (Have "node")
+$alreadyHasCode = Test-Path -LiteralPath (Join-Path $Path ".git")
+if ($alreadyHasTools -or $alreadyHasCode) {
+    Say "Picking up where you left off - the slow parts are already done." Green
+    if ($alreadyHasTools) { Say "  Python, Git and Node.js: already installed" }
+    if ($alreadyHasCode) { Say "  Popper code: already downloaded" }
+    Say ""
+    Say "This should only take a few minutes."
+} else {
+    Say "It takes about 45 minutes, and most of that is downloads."
+}
 Say ""
 Say "You will be asked to sign in to GitHub and to your AI"
 Say "subscription. Those sign-ins happen in your browser and"
