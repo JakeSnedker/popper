@@ -94,11 +94,13 @@ def test_synthesis_repairs_until_valid():
     invalid = (
         "name: gen\n"
         "alpha:\n  features: [ema_50]\n  signal: \"close > ema_50 AND atr_14 > p[atr_min]\"\n"
+        "  signal_short: \"close < ema_50 AND atr_14 > p[atr_min]\"\n"
         "context: {universe: [US30], timeframe: 5m}\n"
     )
     valid = (
         "name: gen\n"
         "alpha:\n  features: [ema_50]\n  signal: \"close > ema_50\"\n"
+        "  signal_short: \"close < ema_50\"\n"
         "context: {universe: [US30], timeframe: 5m}\n"
     )
     llm = StubLLM(invalid, valid)
@@ -125,6 +127,7 @@ def test_synthesis_accepts_required_feature_bound_to_completed_higher_context():
         "  features: []\n"
         "  higher_timeframe_features: {15m: [ema_50]}\n"
         "  signal: 'htf_m15_ema_50 > 0'\n"
+        "  signal_short: 'htf_m15_ema_50 < 0'\n"
         "context: {universe: [US30], timeframe: 5m}\n"
     )
 

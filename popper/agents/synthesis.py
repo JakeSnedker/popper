@@ -12,7 +12,8 @@ from popper.dsl.validator import validate_local_data_context
 
 SYSTEM = (
     "Translate one trading hypothesis into Popper Strategy DSL YAML. Schema: name; "
-    "alpha{features,higher_timeframe_features?,signal,signal_short?}; "
+    "alpha{features,higher_timeframe_features?,signal,signal_short,direction,"
+    "direction_rationale?}; "
     "wrapper{stop,target,trail,break_even,sizing}; "
     "context{universe:[US30],timeframe:1m|5m}; param_space. Use only the supplied feature "
     "library and bounded AND/OR/NOT arithmetic/comparison expressions. Every hypothesis "
@@ -24,7 +25,14 @@ SYSTEM = (
     "Higher features use aliases like htf_m15_ema_50 in signals. A higher timeframe "
     "must be strictly coarser than the base; only completed higher bars are exposed. "
     "Use one base timeframe and optional M5/M15 confluence inside the same hypothesis; "
-    "never clone one hypothesis across timeframes. Return YAML only."
+    "never clone one hypothesis across timeframes. "
+    "DIRECTION: default direction: both, and then signal_short is REQUIRED and must be "
+    "a genuine mirror that can actually be true -- never a condition that is unreachable "
+    "by construction (for example trend_regime < 0 when trend_regime is 0 or 1). Only if "
+    "the mechanism is genuinely one-sided, set direction: long_only or short_only and give "
+    "a direction_rationale saying why the edge cannot exist on the other side. For "
+    "short_only put the condition in signal and leave signal_short unset. "
+    "Return YAML only."
 )
 
 
@@ -84,7 +92,7 @@ def synthesize(
                 raise ValueError("spec must be a YAML mapping")
             data["hypothesis_id"] = hypothesis.id or ""
             data.setdefault("name", f"synth_{hypothesis.id or 'spec'}")
-            spec = validate_spec(data)
+            spec = validate_spec(data, require_direction=True)
             if enforce_local_context:
                 spec = validate_local_data_context(spec)
             return validate_fidelity(hypothesis, spec, mode=mode)

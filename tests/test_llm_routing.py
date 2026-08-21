@@ -185,7 +185,7 @@ def test_unsupported_hypothesis_feature_spends_no_synthesis_call():
 def test_synthesis_escalates_only_after_deterministic_failure():
     hypothesis = Hypothesis(claim="trend persists", mechanism="flow", required_features=["ema_50"])
     invalid = "name: x\nalpha: {features: [ema_50], signal: 'close > nope'}"
-    valid = "name: x\nalpha: {features: [ema_50], signal: 'close > ema_50'}"
+    valid = "name: x\nalpha: {features: [ema_50], signal: 'close > ema_50', signal_short: 'close < ema_50'}"
 
     class RecordingClient(FakeClient):
         def complete(self, system, prompt, model, max_tokens=1024, role=""):

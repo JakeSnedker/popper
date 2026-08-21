@@ -30,6 +30,10 @@ class Alpha(BaseModel):
     higher_timeframe_features: dict[str, list[str]] = Field(default_factory=dict)
     signal: str  # boolean expression, e.g. "close > ema_50 AND atr_14 > p[atr_min]"
     signal_short: str | None = None
+    # Direction is DECLARED, never inferred. A missing signal_short used to mean
+    # "long only" silently, which is how a whole corpus drifts one-directional.
+    direction: Literal["both", "long_only", "short_only"] = "both"
+    direction_rationale: str | None = None  # required when direction != "both"
 
 
 class EntryRule(BaseModel):

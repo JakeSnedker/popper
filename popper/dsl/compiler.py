@@ -288,6 +288,11 @@ class CompiledStrategy:
             "equity_curve": equity_curve,
             "total_return": round(equity - 1.0, 6),
             "win_rate": round(wins / len(trades), 4) if trades else 0.0,
+            # Per-side signal counts. A declared side that fires on zero bars is
+            # one-directional in fact whatever the YAML says -- H-0010 passed the
+            # whole gauntlet with an unreachable short branch.
+            "signal_bars_long": int(long_sig.sum()),
+            "signal_bars_short": int(short_sig.sum()),
         }
 
 
@@ -296,3 +301,28 @@ def compile_to_backtest(spec: StrategySpec | dict) -> CompiledStrategy:
     if isinstance(spec, dict):
         spec = validate_spec(spec)
     return CompiledStrategy(spec)
+
+
+def direction_realized_errors(spec: StrategySpec, result: dict) -> list[str]:
+    """Compare DECLARED direction against signals that actually fired.
+
+    Static validation cannot see an unreachable branch: H-0010 declared a short
+    signal on `trend_regime < 0`, but trend_regime is 0/1 by construction, so the
+    branch could never be true. Only counting fired bars catches that.
+    """
+    errors: list[str] = []
+    longs = int(result.get("signal_bars_long", 0))
+    shorts = int(result.get("signal_bars_short", 0))
+    direction = getattr(spec.alpha, "direction", "both")
+
+    if direction in ("both", "long_only") and longs == 0:
+        errors.append("alpha.signal never fires on this data (0 signal bars)")
+    if direction == "both" and shorts == 0:
+        errors.append(
+            "alpha.direction is 'both' but alpha.signal_short never fires "
+            "(0 signal bars) -- the short branch is unreachable, so this is "
+            "long-only in fact. Fix the condition or declare direction: long_only."
+        )
+    if direction == "long_only" and shorts:
+        errors.append(f"alpha.direction is 'long_only' but {shorts} short signal bars fired")
+    return errors

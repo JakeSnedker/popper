@@ -122,8 +122,48 @@ def _wrapper_param_refs(spec: StrategySpec, errors: list[str]) -> set[str]:
     return refs
 
 
-def validate_spec(spec: StrategySpec | dict) -> StrategySpec:
-    """Returns the validated spec; raises DSLValidationError listing every problem."""
+def _direction_errors(spec: StrategySpec) -> list[str]:
+    """Direction must be declared and must match the signals actually written.
+
+    Asymmetry is allowed but never free: a one-sided alpha has to argue for
+    itself. Left optional, "no short signal" is the path of least resistance
+    and the corpus silently fills with long-only strategies.
+    """
+    errors: list[str] = []
+    direction = spec.alpha.direction
+    has_short = bool((spec.alpha.signal_short or "").strip())
+    has_long = bool((spec.alpha.signal or "").strip())
+
+    if direction == "both":
+        if not has_short:
+            errors.append(
+                "alpha.direction is 'both' but alpha.signal_short is missing. "
+                "Provide a short signal, or declare direction: long_only with a "
+                "direction_rationale explaining why the edge is one-sided."
+            )
+    else:
+        if not (spec.alpha.direction_rationale or "").strip():
+            errors.append(
+                f"alpha.direction is {direction!r} and therefore requires "
+                "alpha.direction_rationale: why does this edge only exist on one side?"
+            )
+        if direction == "long_only" and has_short:
+            errors.append("alpha.direction is 'long_only' but alpha.signal_short is set")
+        if direction == "short_only" and has_long and has_short:
+            errors.append(
+                "alpha.direction is 'short_only': put the short condition in "
+                "alpha.signal and leave alpha.signal_short unset"
+            )
+    return errors
+
+
+def validate_spec(spec: StrategySpec | dict, require_direction: bool = False) -> StrategySpec:
+    """Returns the validated spec; raises DSLValidationError listing every problem.
+
+    `require_direction` enforces the bi-directional guardrail. It is OFF by
+    default so the pre-0.4 corpus and hand-written specs still validate, and ON
+    for freshly synthesised specs -- the agent is what was drifting long-only.
+    """
     if isinstance(spec, dict):
         try:
             spec = StrategySpec.model_validate(spec)
@@ -137,6 +177,8 @@ def validate_spec(spec: StrategySpec | dict) -> StrategySpec:
         if resolve_feature(f) is None:
             errors.append(f"unknown feature: {f!r}")
     errors += _higher_timeframe_errors(spec)
+    if require_direction:
+        errors += _direction_errors(spec)
 
     # signals parse, use only declared names, and stay inside the bounded grammar
     used_params: set[str] = set()

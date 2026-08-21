@@ -93,6 +93,8 @@ def _hyp(claim, mech, feats):
 _GOOD = (
     "name: momo\n"
     "alpha:\n  features: [ema_10]\n  signal: \"close > ema_10\"\n"
+    "  direction: long_only\n"
+    "  direction_rationale: uptrend-only fixture bars\n"
     "wrapper:\n  stop: {type: atr, mult: 1.5}\n  target: {type: rr, ratio: \"p[rr]\"}\n"
     "context: {universe: [US30], timeframe: 1h}\n"
     "param_space: {rr: [1.5, 2.0, 2.5]}\n"
@@ -101,6 +103,7 @@ _GOOD = (
 _DEAD = (
     "name: dead\n"
     "alpha:\n  features: [atr_14]\n  signal: \"atr_14 > p[floor]\"\n"
+    "  signal_short: \"atr_14 > p[floor] AND close < open\"\n"
     "context: {universe: [US30], timeframe: 1h}\n"
     "param_space: {floor: [1000000.0]}\n"
 )
