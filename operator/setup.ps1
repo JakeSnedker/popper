@@ -252,8 +252,15 @@ if (-not $SkipInstall) {
     if ($LASTEXITCODE -ne 0) { throw "Popper Python installation failed" }
 
     Write-Host "Installing and building the dashboard..." -ForegroundColor Cyan
-    & npm --prefix (Join-Path $Root "gui") ci --no-fund --no-audit
-    if ($LASTEXITCODE -ne 0) { throw "Dashboard dependency installation failed" }
+    $Gui = Join-Path $Root "gui"
+    & npm --prefix $Gui ci --no-fund --no-audit
+    if ($LASTEXITCODE -ne 0) {
+        # npm ci refuses ANY lockfile drift, which strands an operator on a
+        # problem only this repo can fix. Re-resolve and keep going instead.
+        Write-Host "npm ci failed; re-resolving with npm install..." -ForegroundColor Yellow
+        & npm --prefix $Gui install --no-fund --no-audit
+        if ($LASTEXITCODE -ne 0) { throw "Dashboard dependency installation failed" }
+    }
     & npm --prefix (Join-Path $Root "gui") run build
     if ($LASTEXITCODE -ne 0) { throw "Dashboard build failed" }
 }
