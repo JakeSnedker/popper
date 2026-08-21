@@ -163,6 +163,18 @@ class CompiledStrategy:
             tgt_off = _resolve(w.target.offset, params)
         else:
             rr = _resolve(w.target.ratio, params)
+        # entry: market fills at the next open; limit/stop rest until touched.
+        entry_kind = w.entry.type
+        entry_lvl = entry_off = None
+        if entry_kind != "market":
+            if w.entry.anchor:
+                entry_lvl = compute_level(_resolve_name(w.entry.anchor, params), bars).to_numpy()
+            else:
+                entry_off = _resolve(w.entry.offset, params)
+        expiry_bars = max(1, int(w.entry.expiry_bars))
+        max_bars_in_trade = (
+            int(_resolve(w.time_stop.max_bars, params)) if w.time_stop.type == "bars" else None
+        )
         trail_mult = _resolve(w.trail.mult, params) if w.trail.type == "atr" else None
         be_trigger = _resolve(w.break_even.trigger_r, params) if w.break_even.type == "after_r" else None
         risk_frac = w.sizing.risk_pct / 100.0
@@ -193,6 +205,8 @@ class CompiledStrategy:
         pos = 0  # +1 long, -1 short, 0 flat
         pending = 0  # signal fired at prev close, enter at this open
         pending_atr = np.nan
+        # a resting limit/stop order: direction, price, and bars left to live
+        rest_dir, rest_px, rest_left = 0, np.nan, 0
         entry = stop = target = risk = np.nan
         entry_i = 0
         day_trades: dict = {}
@@ -220,33 +234,69 @@ class CompiledStrategy:
             equity_curve.append(round(equity, 6))
             pos = 0
 
+        def try_open(i: int, direction: int, e: float, signal_atr: float) -> bool:
+            """Open `direction` at price `e` on bar i, if the trade is coherent.
+
+            Shared by every entry type: a market fill at the open and a touched
+            limit/stop order differ only in the price handed in here.
+            """
+            nonlocal pos, entry, entry_i, risk, stop, target
+            d = days[i]
+            if max_per_day is not None and day_trades.get(d, 0) >= max_per_day:
+                return False
+            # stop price — atr distance or structural level ± offset
+            if sl_mult is not None:
+                s = (e - direction * sl_mult * signal_atr
+                     if not np.isnan(signal_atr) and signal_atr > 0 else np.nan)
+            else:
+                s = stop_lvl[i] + stop_off
+            # GUARD: skip incoherent entries — NaN anchor (level not formed yet)
+            # or a stop on the wrong side of entry
+            if np.isnan(s) or not (s < e if direction == 1 else s > e):
+                return False
+            r_ = abs(e - s)
+            if rr is not None:
+                tp = e + direction * rr * r_
+            else:
+                tp = tgt_lvl[i] + tgt_off
+                # GUARD: target must sit on the profit side of entry
+                if np.isnan(tp) or not (tp > e if direction == 1 else tp < e):
+                    return False
+            if r_ <= 0:
+                return False
+            pos, entry, entry_i, risk, stop, target = direction, e, i, r_, s, tp
+            day_trades[d] = day_trades.get(d, 0) + 1
+            return True
+
         for i in range(len(bars)):
-            # 1) open a pending entry at this bar's open
+            # 1) market entry: the signal fired at the previous close, fill here
             if pos == 0 and pending != 0:
-                d = days[i]
-                if max_per_day is None or day_trades.get(d, 0) < max_per_day:
-                    e = o[i]
-                    # stop price — atr distance or structural level ± offset
-                    if sl_mult is not None:
-                        s = (e - pending * sl_mult * pending_atr
-                             if not np.isnan(pending_atr) and pending_atr > 0 else np.nan)
-                    else:
-                        s = stop_lvl[i] + stop_off
-                    # GUARD: skip incoherent entries — NaN anchor (level not
-                    # formed yet) or a stop on the wrong side of entry
-                    ok = not np.isnan(s) and (s < e if pending == 1 else s > e)
-                    if ok:
-                        r_ = abs(e - s)
-                        if rr is not None:
-                            tp = e + pending * rr * r_
-                        else:
-                            tp = tgt_lvl[i] + tgt_off
-                            # GUARD: target must sit on the profit side of entry
-                            ok = not np.isnan(tp) and (tp > e if pending == 1 else tp < e)
-                        if ok and r_ > 0:
-                            pos, entry, entry_i, risk, stop, target = pending, e, i, r_, s, tp
-                            day_trades[d] = day_trades.get(d, 0) + 1
+                try_open(i, pending, o[i], pending_atr)
             pending = 0
+
+            # 1b) a resting limit/stop order: fill if this bar trades through it.
+            # A limit is touched from the favourable side and can only fill at
+            # its price or better; a stop is touched from the adverse side and a
+            # gap fills it worse. Both mirror the exit handling below.
+            if pos == 0 and rest_dir != 0:
+                touched = fill = None
+                if entry_kind == "limit":
+                    if rest_dir == 1 and low[i] <= rest_px:
+                        touched, fill = True, min(o[i], rest_px)
+                    elif rest_dir == -1 and h[i] >= rest_px:
+                        touched, fill = True, max(o[i], rest_px)
+                else:  # stop entry
+                    if rest_dir == 1 and h[i] >= rest_px:
+                        touched, fill = True, max(o[i], rest_px)
+                    elif rest_dir == -1 and low[i] <= rest_px:
+                        touched, fill = True, min(o[i], rest_px)
+                if touched:
+                    try_open(i, rest_dir, fill, pending_atr)
+                    rest_dir, rest_px, rest_left = 0, np.nan, 0
+                else:
+                    rest_left -= 1
+                    if rest_left <= 0:      # expired unfilled
+                        rest_dir, rest_px, rest_left = 0, np.nan, 0
 
             # 2) manage an open position: stop first (conservative), then target
             if pos == 1:
@@ -260,6 +310,13 @@ class CompiledStrategy:
                 elif low[i] <= target:
                     close_trade(i, min(o[i], target), "target")
 
+            # 2b) time stop: close on elapsed bars regardless of price. Checked
+            # after the price exits so a bar that hits the stop AND expires is
+            # recorded as the stop -- the worse of the two, conservatively.
+            if pos != 0 and max_bars_in_trade is not None and i > entry_i:
+                if (i - entry_i) >= max_bars_in_trade:
+                    close_trade(i, c[i], "time")
+
             # 3) tighten stop for FUTURE bars from this bar's data
             if pos != 0:
                 if be_trigger is not None:
@@ -270,12 +327,24 @@ class CompiledStrategy:
                     trailed = c[i] - pos * trail_mult * atr[i]
                     stop = max(stop, trailed) if pos == 1 else min(stop, trailed)
 
-            # 4) signal on this bar's close -> entry next bar
-            if pos == 0:
-                if long_sig[i]:
-                    pending, pending_atr = 1, atr[i]
-                elif short_sig[i]:
-                    pending, pending_atr = -1, atr[i]
+            # 4) signal on this bar's close -> order for the NEXT bar onwards.
+            # Prices come from bar i only, so nothing here can see the future.
+            if pos == 0 and rest_dir == 0:
+                direction = 1 if long_sig[i] else (-1 if short_sig[i] else 0)
+                if direction:
+                    pending_atr = atr[i]
+                    if entry_kind == "market":
+                        pending = direction
+                    elif entry_lvl is not None:
+                        rest_px = entry_lvl[i]
+                        rest_dir = direction if not np.isnan(rest_px) else 0
+                        rest_left = expiry_bars
+                    elif not np.isnan(atr[i]):
+                        # limit rests at a BETTER price, stop at a WORSE one
+                        away = entry_off * atr[i]
+                        sign = -1 if entry_kind == "limit" else 1
+                        rest_px = c[i] + direction * sign * away
+                        rest_dir, rest_left = direction, expiry_bars
 
         if pos != 0:  # close a dangling position at the last close
             close_trade(len(bars) - 1, c[-1], "eod")

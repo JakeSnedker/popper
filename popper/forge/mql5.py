@@ -41,7 +41,28 @@ def _validate(spec: StrategySpec) -> None:
         raise Mql5Unsupported("MQL5 target does not yet support no_trade constraints")
 
 
+def _reject_unsupported(spec) -> None:
+    """Refuse to emit code that would trade differently from the backtest.
+
+    v0.4 added resting entries and time exits to the DSL and the compiler. Until
+    an emitter renders them faithfully it must FAIL, never silently downgrade a
+    limit order to a market order -- that ships a strategy nobody tested.
+    """
+    w = spec.wrapper
+    if w.entry.type != "market":
+        raise NotImplementedError(
+            f"entry.type '{w.entry.type}' is backtestable but this emitter cannot render it yet; "
+            f"emitting a market entry instead would deploy a different strategy"
+        )
+    if w.time_stop.type != "none":
+        raise NotImplementedError(
+            "wrapper.time_stop is backtestable but this emitter cannot render it yet; "
+            "emitting without it would deploy a different strategy"
+        )
+
+
 def generate_mql5(spec: StrategySpec) -> str:
+    _reject_unsupported(spec)
     _validate(spec)
     features = set(spec.alpha.features)
     ema_periods = {int(match.group(1)) for feature in features if (match := _EMA.match(feature))}

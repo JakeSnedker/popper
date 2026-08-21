@@ -87,6 +87,10 @@ def _wrapper_param_refs(spec: StrategySpec, errors: list[str]) -> set[str]:
         ("wrapper.target.ratio", w.target.ratio) if w.target.type == "ratio"
         else ("wrapper.target.offset", w.target.offset),
     ]
+    if w.entry.type != "market" and not w.entry.anchor:
+        fields.append(("wrapper.entry.offset", w.entry.offset))
+    if w.time_stop.type == "bars":
+        fields.append(("wrapper.time_stop.max_bars", w.time_stop.max_bars))
     for path, value in fields:
         if isinstance(value, str):
             m = _PARAM_REF.match(value)
@@ -120,6 +124,28 @@ def _wrapper_param_refs(spec: StrategySpec, errors: list[str]) -> set[str]:
                     f"(side rule: a {'stop' if side == 'loss-side' else 'target'} "
                     f"cannot anchor a {'profit' if side == 'loss-side' else 'loss'}-side level)"
                 )
+    # entry orders: a resting order needs a price and a finite lifetime
+    if w.entry.type != "market":
+        if w.entry.anchor:
+            if w.entry.anchor not in LEVEL_FEATURES:
+                errors.append(f"wrapper.entry.anchor: unknown level-feature {w.entry.anchor!r}")
+        elif isinstance(w.entry.offset, (int, float)) and w.entry.offset <= 0:
+            errors.append(
+                f"wrapper.entry.offset must be > 0 for a {w.entry.type} order: an offset of 0 "
+                f"rests the order at the signal close, which is just a market entry"
+            )
+        if w.entry.expiry_bars < 1:
+            errors.append(
+                "wrapper.entry.expiry_bars must be at least 1; an order that never expires can "
+                "fill arbitrarily far from the conditions that justified it"
+            )
+    elif w.entry.anchor:
+        errors.append("wrapper.entry.anchor is set but wrapper.entry.type is 'market'")
+
+    if w.time_stop.type == "bars" and isinstance(w.time_stop.max_bars, (int, float)):
+        if w.time_stop.max_bars < 1:
+            errors.append("wrapper.time_stop.max_bars must be at least 1")
+
     return refs
 
 

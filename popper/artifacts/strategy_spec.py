@@ -37,7 +37,25 @@ class Alpha(BaseModel):
 
 
 class EntryRule(BaseModel):
-    type: Literal["market"] = "market"  # fills at next bar open
+    """How the position is opened once the signal fires.
+
+    market -- fills at the next bar open, the v0.3 behaviour.
+    limit  -- rests at a BETTER price than the signal close (buy below, sell
+              above) and fills only if price comes back to it.
+    stop   -- rests at a WORSE price (buy above, sell below): a breakout entry
+              that fills only if price runs on.
+
+    A resting order needs a price and a lifetime. Price is either `offset` ATR
+    multiples away from the signal bar's close, or an `anchor` level feature,
+    mirroring how stops and targets already work. `expiry_bars` cancels an
+    unfilled order -- without it an order rests forever and the fill is no
+    longer the one the hypothesis described.
+    """
+
+    type: Literal["market", "limit", "stop"] = "market"
+    offset: Param = 0.5             # ATR multiples from the signal close
+    anchor: str | None = None       # or rest at a LEVEL_FEATURE instead
+    expiry_bars: int = 5            # cancel an unfilled order after N bars
 
 
 class StopRule(BaseModel):
@@ -76,6 +94,18 @@ class BreakEvenRule(BaseModel):
     trigger_r: Param = 1.0  # move stop to entry after this many R in favour
 
 
+class TimeStop(BaseModel):
+    """Close on elapsed bars, regardless of price.
+
+    Without this every trade must resolve at a price level, which silently
+    excludes any edge that simply decays -- the strategy is right for an hour
+    and then is not. Those hypotheses could not previously be written down.
+    """
+
+    type: Literal["none", "bars"] = "none"
+    max_bars: Param = 20.0
+
+
 class Sizing(BaseModel):
     risk_pct: float = 0.5  # % of equity risked per trade
 
@@ -93,6 +123,7 @@ class Wrapper(BaseModel):
     target: TargetRule = Field(default_factory=TargetRule)
     trail: TrailRule = Field(default_factory=TrailRule)
     break_even: BreakEvenRule = Field(default_factory=BreakEvenRule)
+    time_stop: TimeStop = Field(default_factory=TimeStop)
     sizing: Sizing = Field(default_factory=Sizing)
     constraints: Constraints = Field(default_factory=Constraints)
 
