@@ -378,7 +378,9 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
         return Scorecard(
             experiment_id=exp_id,
             robustness=round(robustness, 3),
-            parameter_stability=round(param_stability, 3),
+            parameter_stability=(
+                round(param_stability, 3) if param_stability is not None else None
+            ),
             deflated_sharpe=round(dsr, 3),
             pbo=round(pbo, 3),
             diagnostics=diag,  # whatever gates ran up to this return path
@@ -468,17 +470,29 @@ def judge(spec, run_fn=run, period: tuple[str, str] | None = None,
 
     # --- GATE 2: parameter-neighbourhood robustness (over full period) ---
     grid_pfs = [_pf(run_fn(spec, period=period, params=c)) for c in grid]
+    # A single-point grid has no neighbourhood. profitable_frac is then 1.0 or 0.0
+    # and always clears the 50% bar, so the gate measures NOTHING -- it must say so
+    # rather than pass quietly with a 0.0 score that reads as "maximally unstable".
+    measured = len(grid_pfs) > 1
     profitable_frac = mean(1.0 if p > 1.0 else 0.0 for p in grid_pfs)
-    pf_cv = (pstdev(grid_pfs) / mean(grid_pfs)) if len(grid_pfs) > 1 and mean(grid_pfs) > 0 else 1.0
-    param_stability = max(0.0, min(profitable_frac, 1.0 - min(pf_cv, 1.0)))
+    pf_cv = (pstdev(grid_pfs) / mean(grid_pfs)) if measured and mean(grid_pfs) > 0 else None
+    param_stability = (
+        max(0.0, min(profitable_frac, 1.0 - min(pf_cv, 1.0))) if pf_cv is not None else None
+    )
     n_before = len(reasons)
-    if profitable_frac < t.min_profitable_fraction:
+    if not measured:
+        reasons.append(
+            "parameter robustness not measured: the whole param grid is a single point, "
+            "so the neighbourhood test had nothing to vary"
+        )
+    elif profitable_frac < t.min_profitable_fraction:
         reasons.append(f"only {profitable_frac:.0%} of param grid profitable < {t.min_profitable_fraction:.0%}")
-    if pf_cv > t.max_pf_cv and len(grid) > 1:
+    if pf_cv is not None and pf_cv > t.max_pf_cv:
         reasons.append(f"PF dispersion across grid {pf_cv:.0%} > {t.max_pf_cv:.0%} (knife-edge)")
     diag["gate2_robustness"] = {
         "profitable_frac": round(profitable_frac, 4), "min_profitable_fraction": t.min_profitable_fraction,
-        "pf_cv": round(pf_cv, 4), "max_pf_cv": t.max_pf_cv,
+        "pf_cv": round(pf_cv, 4) if pf_cv is not None else None,
+        "max_pf_cv": t.max_pf_cv, "measured": measured,
         "grid_pfs": [round(p, 4) for p in grid_pfs],
         "passed": len(reasons) == n_before,
     }

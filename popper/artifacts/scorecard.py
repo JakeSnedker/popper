@@ -18,7 +18,10 @@ class Scorecard(BaseModel):
     id: str | None = None  # assigned by alpha memory as SC-#### if absent
     experiment_id: str
     robustness: float = 0.0  # consistency across CPCV folds
-    parameter_stability: float = 0.0  # edge holds across the param neighbourhood (Phase 3)
+    # None = NOT MEASURED. A single-point parameter grid has no neighbourhood to
+    # test, and reporting 0.0 there made 'never measured' indistinguishable from
+    # 'maximally unstable' to anything ranking on this field.
+    parameter_stability: float | None = 0.0  # edge holds across the param neighbourhood
     regime_stability: float = 0.0  # survives regime change?
     capacity: float = 0.0  # PnL retained as size scales
     execution_realism: float = 0.0  # 1 - (backtest vs modeled-fill gap)
