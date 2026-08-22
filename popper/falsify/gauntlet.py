@@ -41,6 +41,11 @@ from popper.data import load_bars, load_higher_timeframe_bars
 from popper.data.timeframes import timeframe_minutes
 from popper.dsl import compile_to_backtest
 from popper.dsl.expr import eval_signal
+from popper.falsify.overlap import (
+    block_bootstrap_lower,
+    effective_n,
+    newey_west_t,
+)
 from popper.experiments import run
 from popper.falsify.stats import (
     calculate_edge,
@@ -57,13 +62,19 @@ L1_HORIZON_FAMILIES = {
 }
 L1_MIN_T = 2.0                 # balanced/strict min t-stat inside the winning horizon family
 L1_MIN_SIGNALS = 30            # fewer firings than this = no evidence of edge
+L1_BOOT_ALPHA = 0.05           # bootstrap lower bound is the 5th percentile
+# `min_t` now reads the OVERLAP-CORRECTED t, which is strictly smaller than the
+# raw one, so the same numbers are a materially higher bar than before.
+# `required_boot_ok` counts horizons whose bootstrap lower bound clears zero --
+# evidence that survives without assuming thin tails, which is how a skewed
+# high-R payoff earns a pass it could never get from t alone.
 L1_SIGNAL_EDGE_MODES = {
     # coherent positive family is enough; useful for discovery, not promotion
-    "loose": {"min_t": 1.0, "required_t_ok": 0, "required_avg_t": 0.0},
+    "loose": {"min_t": 1.0, "required_t_ok": 0, "required_avg_t": 0.0, "required_boot_ok": 0},
     # default: coherent family plus moderate statistical evidence
-    "balanced": {"min_t": 2.0, "required_t_ok": 2, "required_avg_t": 1.5},
+    "balanced": {"min_t": 2.0, "required_t_ok": 2, "required_avg_t": 1.5, "required_boot_ok": 1},
     # demo/production hardening: every horizon in the family needs evidence
-    "strict": {"min_t": 2.0, "required_t_ok": 3, "required_avg_t": 2.0},
+    "strict": {"min_t": 2.0, "required_t_ok": 3, "required_avg_t": 2.0, "required_boot_ok": 3},
 }
 
 
@@ -176,6 +187,7 @@ def _horizon_families(horizons: dict, mode: str = "balanced") -> dict:
         t_values = [horizons[h]["t"] for h in hs]
         avg_t = sum(t_values) / len(t_values)
         t_ok = sum(t >= rules["min_t"] for t in t_values)
+        boot_ok = sum(horizons[h].get("boot_lo", 0.0) > 0 for h in hs)
         families[name] = {
             "horizons": list(hs),
             "mode": mode,
@@ -186,10 +198,13 @@ def _horizon_families(horizons: dict, mode: str = "balanced") -> dict:
             "min_t": rules["min_t"],
             "avg_t": round(avg_t, 3),
             "required_avg_t": rules["required_avg_t"],
+            "boot_ok": boot_ok,
+            "required_boot_ok": rules["required_boot_ok"],
             "passed": (
                 fav == len(hs)
                 and t_ok >= rules["required_t_ok"]
                 and avg_t >= rules["required_avg_t"]
+                and boot_ok >= rules["required_boot_ok"]
             ),
         }
     return families
@@ -225,10 +240,22 @@ def _signal_edge(
         n = len(r)
         mu = float(r.mean()) if n else 0.0
         sd = float(r.std(ddof=1)) if n > 1 else 0.0
-        tstat = mu / (sd / sqrt(n)) if n > 1 and sd > 0 else 0.0
-        horizons[h] = {"n": n, "mean": round(mu, 8), "t": round(tstat, 3)}
+        raw_t = mu / (sd / sqrt(n)) if n > 1 and sd > 0 else 0.0
+        # Overlapping windows: an h-bar forward return computed every bar shares
+        # h-1 neighbours, so the plain t buys significance it has not earned.
+        # The HAC t is the one the gate reads; raw_t stays for comparison.
+        t_nw = newey_west_t(r, h - 1) if n > 2 else 0.0
+        # ...and the plain t punishes fat right tails, the exact payoff shape
+        # worth finding. A bootstrap lower bound asks only whether the mean is
+        # reliably positive, with no normality assumption.
+        boot_lo = block_bootstrap_lower(r, h, alpha=L1_BOOT_ALPHA) if n > 2 else 0.0
+        horizons[h] = {
+            "n": n, "n_eff": effective_n(n, h - 1),
+            "mean": round(mu, 8), "t": round(t_nw, 3),
+            "t_raw": round(raw_t, 3), "boot_lo": round(boot_lo, 10),
+        }
         n_fav += mu > 0
-        n_t_ok += tstat >= L1_MIN_T
+        n_t_ok += t_nw >= L1_MIN_T
 
     families = _horizon_families(horizons, mode=mode)
 
@@ -252,6 +279,11 @@ def _signal_edge(
                 needs.append(f"t >= {f['min_t']} on {f['t_ok']}/{len(f['horizons'])} horizons")
             if f["avg_t"] < f["required_avg_t"]:
                 needs.append(f"avg t {f['avg_t']:.2f} < required {f['required_avg_t']:.2f}")
+            if f["boot_ok"] < f["required_boot_ok"]:
+                needs.append(
+                    f"bootstrap lower bound above zero on only "
+                    f"{f['boot_ok']}/{len(f['horizons'])} horizons"
+                )
             reason = f"weak signal edge in best family {best[0]} ({mode}): " + "; ".join(needs)
     return {"mode": mode, "horizons": {str(h): v for h, v in horizons.items()},
             "horizon_families": families,

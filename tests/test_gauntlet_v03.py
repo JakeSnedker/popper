@@ -82,19 +82,19 @@ def test_layer1_passes_scoped_horizon_family_without_all_four():
     edge may need 10/20/60 and not show at 3. Layer 1 should discover that
     horizon family instead of requiring all four horizons to be favourable."""
     scalp = _horizon_families({
-        3: {"mean": 0.1, "t": 2.4},
-        10: {"mean": 0.08, "t": 2.1},
-        20: {"mean": 0.04, "t": 1.4},
-        60: {"mean": -0.01, "t": -0.2},
+        3: {"mean": 0.1, "t": 2.4, "boot_lo": 0.00002},
+        10: {"mean": 0.08, "t": 2.1, "boot_lo": 0.00002},
+        20: {"mean": 0.04, "t": 1.4, "boot_lo": 0.00002},
+        60: {"mean": -0.01, "t": -0.2, "boot_lo": -0.00002},
     })
     assert scalp["scalp_intraday"]["passed"] is True
     assert scalp["intraday_swing"]["passed"] is False
 
     swing = _horizon_families({
-        3: {"mean": -0.01, "t": -0.2},
-        10: {"mean": 0.04, "t": 2.1},
-        20: {"mean": 0.08, "t": 2.4},
-        60: {"mean": 0.1, "t": 1.6},
+        3: {"mean": -0.01, "t": -0.2, "boot_lo": -0.00002},
+        10: {"mean": 0.04, "t": 2.1, "boot_lo": 0.00002},
+        20: {"mean": 0.08, "t": 2.4, "boot_lo": 0.00002},
+        60: {"mean": 0.1, "t": 1.6, "boot_lo": 0.00002},
     })
     assert swing["scalp_intraday"]["passed"] is False
     assert swing["intraday_swing"]["passed"] is True
@@ -102,10 +102,10 @@ def test_layer1_passes_scoped_horizon_family_without_all_four():
 
 def test_layer1_signal_edge_modes_tune_strictness():
     horizons = {
-        3: {"mean": 0.1, "t": 0.6},
-        10: {"mean": 0.08, "t": 0.8},
-        20: {"mean": 0.04, "t": 0.4},
-        60: {"mean": -0.01, "t": -0.2},
+        3: {"mean": 0.1, "t": 0.6, "boot_lo": 0.00002},
+        10: {"mean": 0.08, "t": 0.8, "boot_lo": 0.00002},
+        20: {"mean": 0.04, "t": 0.4, "boot_lo": 0.00002},
+        60: {"mean": -0.01, "t": -0.2, "boot_lo": -0.00002},
     }
     loose = _horizon_families(horizons, mode="loose")
     balanced = _horizon_families(horizons, mode="balanced")
@@ -114,10 +114,10 @@ def test_layer1_signal_edge_modes_tune_strictness():
     assert balanced["scalp_intraday"]["avg_t"] == 0.6
 
     marginal = _horizon_families({
-        3: {"mean": 0.1, "t": 2.4},
-        10: {"mean": 0.08, "t": 2.1},
-        20: {"mean": 0.04, "t": 1.4},
-        60: {"mean": -0.01, "t": -0.2},
+        3: {"mean": 0.1, "t": 2.4, "boot_lo": 0.00002},
+        10: {"mean": 0.08, "t": 2.1, "boot_lo": 0.00002},
+        20: {"mean": 0.04, "t": 1.4, "boot_lo": 0.00002},
+        60: {"mean": -0.01, "t": -0.2, "boot_lo": -0.00002},
     }, mode="strict")
     assert marginal["scalp_intraday"]["passed"] is False
     assert marginal["scalp_intraday"]["required_t_ok"] == 3
