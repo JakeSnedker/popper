@@ -8,8 +8,7 @@ Current target coverage includes both promoted Popper strategies: ATR/EMA/sessio
 
 All thirteen DSL v0.3 level-features render in both targets. `tests/test_forge_levels.py` transliterates the emitted Pine and MQL5 back into Python and asserts bar-for-bar equality with `popper.dsl.features.levels.compute_level` on real US30 M5 bars — string checks alone cannot prove an emitter causal.
 
-A level anchor may price a resting entry (all thirteen), a stop, or a target. Three combinations stay blocked rather than approximated silently:
+All thirteen level anchors now price a resting entry, a stop and a target. `prior_fractal_hi/lo` and `bb_line` read bar i's own OHLC, so `popper/dsl/compiler.py`'s `exit_anchor` shifts exactly those three (`INTRA_BAR_LEVELS`) one bar back when it resolves an EXIT; the emitters render the same shift (`level[1]` in Pine, shift 1 in MQL5) and leave entry anchors unshifted. Two combinations stay blocked rather than approximated silently:
 
-- **`prior_fractal_hi/lo` and `bb_line` as a stop/target anchor.** `popper/dsl/compiler.py` resolves an exit anchor at the FILL bar and documents the invariant "level[i] uses bars <= i-1, all complete at bar i's open". These three break it — a fractal's confirmation reads bar i's own high/low and `bb_line` averages in bar i's close — so no live target can read that value when the trade opens. **This is a look-ahead in the backtest, not only a Forge gap.**
 - **A level exit combined with a resting entry.** 1R is measured from the fill bar's level, and a broker needs the order volume at placement.
-- Trailing stops, break-even rules, and `no_trade` constraints.
+- `no_trade` constraints.

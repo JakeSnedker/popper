@@ -14,8 +14,8 @@ from popper.forge.coverage import TARGETS, coverage, coverage_for, report
 
 # measured 2026-08-23, at DSL v0.4 (level-feature vocabulary landed in both targets)
 BASELINE = {
-    "pine": {"features": 8, "levels": 13, "capabilities": 9},
-    "mql5": {"features": 8, "levels": 13, "capabilities": 10},
+    "pine": {"features": 8, "levels": 13, "capabilities": 10},
+    "mql5": {"features": 8, "levels": 13, "capabilities": 11},
 }
 
 

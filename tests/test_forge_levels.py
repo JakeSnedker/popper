@@ -19,10 +19,10 @@ import pytest
 from popper.artifacts import StrategySpec
 from popper.data.bars import load_bars
 from popper.dsl.features import SESSIONS
-from popper.dsl.features.levels import LEVEL_FEATURES, compute_level
-from popper.forge import ForgeUnsupported, forge_spec
-from popper.forge.mql5 import Mql5Unsupported, generate_mql5
-from popper.forge.pine import PineUnsupported, generate_pine
+from popper.dsl.features.levels import INTRA_BAR_LEVELS, LEVEL_FEATURES, compute_level
+from popper.forge import forge_spec
+from popper.forge.mql5 import _level_call, generate_mql5
+from popper.forge.pine import generate_pine
 
 BARS = load_bars("US30", "M5", "2025-01-01", "2025-03-31")
 # the MQL5 session mirror rescans the previous day for every bar, so it runs on a
@@ -49,9 +49,13 @@ def spec(**wrapper):
     })
 
 
-def assert_parity(name: str, mirror: list, bars: pd.DataFrame, target: str):
-    """Bar-for-bar equality with compute_level; only NaN-vs-NaN may differ."""
-    expected = compute_level(name, bars).to_numpy(dtype=float)
+def assert_parity(name: str, mirror: list, bars: pd.DataFrame, target: str, shift: int = 0):
+    """Bar-for-bar equality with compute_level; only NaN-vs-NaN may differ.
+
+    `shift=1` compares against the series popper/dsl/compiler.py's `exit_anchor`
+    builds for an INTRA_BAR_LEVEL -- compute_level(...).shift(1).
+    """
+    expected = compute_level(name, bars).shift(shift).to_numpy(dtype=float)
     got = np.asarray(mirror, dtype=float)
     assert got.shape == expected.shape
     both_nan = np.isnan(expected) & np.isnan(got)
@@ -300,14 +304,14 @@ def test_a_fractal_is_published_two_bars_after_the_bar_that_made_it():
     assert differing.sum() > 20, "the fixture never confirms a fractal -- widen it"
 
 
-# --- which anchors an EXIT may use, and why the rest are refused -------------
+# --- why the intra-bar levels have to be shifted at all ----------------------
 
-@pytest.mark.parametrize("name", ["prior_fractal_hi", "prior_fractal_lo", "bb_line"])
-def test_the_refused_exit_anchors_really_do_read_their_own_bar(name):
-    """compiler.py claims "level[i] uses bars <= i-1, all complete at bar i's
-    open" and resolves an exit anchor at the FILL bar. These three break that
-    claim: perturbing bar i's own OHLC moves level[i]. No live target can price
-    an exit off them at the fill, which is why both emitters refuse."""
+@pytest.mark.parametrize("name", sorted(INTRA_BAR_LEVELS))
+def test_the_shifted_exit_anchors_really_do_read_their_own_bar(name):
+    """compiler.py's old claim was "level[i] uses bars <= i-1, all complete at
+    bar i's open", and it resolves an exit anchor at the FILL bar. These three
+    break that claim: perturbing bar i's own OHLC moves level[i]. That is why
+    `exit_anchor` shifts them and both emitters read one bar back."""
     window = BARS.iloc[:600].copy().reset_index(drop=True)
     base = compute_level(name, window).to_numpy(dtype=float)
     bumped = window.copy()
@@ -321,22 +325,54 @@ def test_the_refused_exit_anchors_really_do_read_their_own_bar(name):
     assert changed.any(), f"{name} does not depend on the current bar after all"
 
 
-@pytest.mark.parametrize("name", ["prior_fractal_lo", "bb_line"])
-def test_a_stop_anchored_to_a_current_bar_level_fails_closed(name):
-    sp = spec(stop={"type": "level", "anchor": name})
-    for generate, error in ((generate_pine, PineUnsupported), (generate_mql5, Mql5Unsupported)):
-        with pytest.raises(error, match="not knowable when the trade opens"):
-            generate(sp)
-    with pytest.raises(ForgeUnsupported):
-        forge_spec(sp)
+# --- the intra-bar levels: rendered, but one bar back ------------------------
+# compiler.exit_anchor shifts exactly INTRA_BAR_LEVELS, and only for an exit.
+# The mirrors below are the emitted exit expression -- Pine `level[1]` and MQL5
+# shift 1 -- which is the same pure function of `shift` one bar earlier.
 
 
-def test_a_target_anchored_to_a_current_bar_level_fails_closed():
-    sp = spec(target={"type": "level", "anchor": "prior_fractal_hi"})
-    with pytest.raises(PineUnsupported, match="wrapper.target"):
-        generate_pine(sp)
-    with pytest.raises(Mql5Unsupported, match="wrapper.target"):
-        generate_mql5(sp)
+def _one_bar_back(mirror: list) -> list:
+    """Pine `x[1]` / MQL5 shift+1: the value the bar before."""
+    return [NAN] + list(mirror[:-1])
+
+
+@pytest.mark.parametrize("name", FRACTALS)
+def test_pine_exit_anchor_reads_the_previous_fractal_value(name):
+    assert_parity(name, _one_bar_back(pine_fractal(BARS, name)), BARS, "pine", shift=1)
+
+
+def test_pine_exit_anchor_reads_the_previous_bb_line_value():
+    assert_parity("bb_line", _one_bar_back(pine_bb(BARS)), BARS, "pine", shift=1)
+
+
+@pytest.mark.parametrize("name", FRACTALS)
+def test_mql5_exit_anchor_reads_the_previous_fractal_value(name):
+    assert_parity(name, _one_bar_back(mql5_fractal(BARS, name)), BARS, "mql5", shift=1)
+
+
+def test_mql5_exit_anchor_reads_the_previous_bb_line_value():
+    assert_parity("bb_line", _one_bar_back(mql5_bb(BARS)), BARS, "mql5", shift=1)
+
+
+@pytest.mark.parametrize("name", sorted(INTRA_BAR_LEVELS))
+def test_an_intra_bar_level_exit_renders_shifted_in_both_targets(name):
+    sp = spec(stop={"type": "level", "anchor": name, "offset": -3.0})
+    pine, mql = generate_pine(sp), generate_mql5(sp)
+    assert f"float new_stop = {name}[1] + (-3)" in pine
+    assert f"double stop = {_level_call(name, '1')} + (-3)" in mql
+    assert forge_spec(sp).files
+
+
+@pytest.mark.parametrize("name", sorted(LEVEL_FEATURES - INTRA_BAR_LEVELS))
+def test_a_settled_level_exit_is_never_shifted(name):
+    """Getting this backwards would price an exit off a bar older than the one
+    the backtest used -- a silent, permanent mispricing of every stop."""
+    side = "stop" if name.endswith("_lo") else "target"
+    sp = spec(**{side: {"type": "level", "anchor": name, "offset": 0.0}})
+    pine, mql = generate_pine(sp), generate_mql5(sp)
+    assert f"new_{side} = {name} + (0)" in pine
+    assert f"{name}[1]" not in pine
+    assert _level_call(name, "0") in mql and _level_call(name, "1") not in mql
 
 
 def test_a_level_exit_with_a_resting_entry_fails_closed():

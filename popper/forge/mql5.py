@@ -4,7 +4,7 @@ import re
 
 from popper.artifacts import StrategySpec
 from popper.dsl.features import SESSIONS
-from popper.dsl.features.levels import DEFAULT_SWING_N, LEVEL_FEATURES
+from popper.dsl.features.levels import DEFAULT_SWING_N, INTRA_BAR_LEVELS, LEVEL_FEATURES
 from popper.forge.expr import anchor_level, compile_expression, input_name
 
 _SUPPORTED = {
@@ -14,17 +14,6 @@ _SUPPORTED = {
 # Every level-feature renders as a series (tests/test_forge_levels.py proves each
 # one numerically against popper.dsl.features.levels.compute_level on real bars).
 _SUPPORTED_LEVELS = set(LEVEL_FEATURES)
-
-# ...but only THESE may anchor a stop or a target. The compiler resolves an exit
-# anchor at the FILL bar (`stop_lvl[i]` in popper/dsl/compiler.py) and states the
-# invariant "level[i] uses bars <= i-1, all complete at bar i's open". That holds
-# for the swing and session levels; it does NOT hold for prior_fractal_hi/lo
-# (confirmation reads bar i's own high/low) or bb_line (the SMA includes bar i's
-# close). The EA prices its exits at the open of the fill bar, so those three
-# have no value to read there -- they stay refused rather than rendered stale.
-_EXIT_LEVELS = frozenset(
-    LEVEL_FEATURES - {"prior_fractal_hi", "prior_fractal_lo", "bb_line"}
-)
 _EMA = re.compile(r"^ema_(\d+)$")
 _PARAM = re.compile(r"^p\[(\w+)\]$")
 
@@ -144,13 +133,21 @@ def _exit_anchor(spec: StrategySpec, rule, path: str) -> str:
     name = anchor_level(spec, rule.anchor)
     if name not in _SUPPORTED_LEVELS:
         raise Mql5Unsupported(f"MQL5 target does not implement level-feature {name!r} ({path})")
-    if name not in _EXIT_LEVELS:
-        raise Mql5Unsupported(
-            f"MQL5 target cannot anchor {path} to level-feature {name!r}: its value on "
-            "bar i depends on bar i's own OHLC, but the backtest resolves an exit anchor "
-            "at the fill bar, so the price is not knowable when the trade opens"
-        )
     return name
+
+
+def _exit_call(name: str) -> str:
+    """The level call an EXIT prices from, evaluated on the bar the trade opens.
+
+    Shift 0 is that bar. Most levels are functions of bars <= i-1, so shift 0 is
+    already final. bb_line and the two fractals read bar i's own OHLC, and
+    popper/dsl/compiler.py's `exit_anchor` shifts exactly those three
+    (INTRA_BAR_LEVELS) one bar back before resolving an exit -- so the EA reads
+    shift 1, the last fully-closed bar, which is the price the backtest used.
+
+    ENTRY anchors stay at shift 1 (the signal bar) and are never shifted again.
+    """
+    return _level_call(name, "1" if name in INTRA_BAR_LEVELS else "0")
 
 
 def _entry_anchor(spec: StrategySpec, name: str) -> str:
@@ -427,12 +424,12 @@ bool PlacePending(const bool is_long, const double atr, const double signal_clos
     w = spec.wrapper
     if w.stop.type == "level" or w.target.type == "level":
         stop_expr = (
-            f"{_level_call(_exit_anchor(spec, w.stop, 'wrapper.stop'), '0')}"
+            f"{_exit_call(_exit_anchor(spec, w.stop, 'wrapper.stop'))}"
             f" + ({_wrapper_value(w.stop.offset)})" if w.stop.type == "level"
             else f"price + (is_long ? -1.0 : 1.0) * atr * {stop_mult}"
         )
         target_expr = (
-            f"{_level_call(_exit_anchor(spec, w.target, 'wrapper.target'), '0')}"
+            f"{_exit_call(_exit_anchor(spec, w.target, 'wrapper.target'))}"
             f" + ({_wrapper_value(w.target.offset)})" if w.target.type == "level"
             else f"price + (is_long ? 1.0 : -1.0) * stop_distance * {rr}"
         )

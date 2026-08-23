@@ -4,7 +4,7 @@ import re
 
 from popper.artifacts import StrategySpec
 from popper.dsl.features import SESSIONS
-from popper.dsl.features.levels import DEFAULT_SWING_N, LEVEL_FEATURES
+from popper.dsl.features.levels import DEFAULT_SWING_N, INTRA_BAR_LEVELS, LEVEL_FEATURES
 from popper.forge.expr import anchor_level, compile_expression, input_name
 
 _SUPPORTED = {
@@ -14,18 +14,6 @@ _SUPPORTED = {
 # Every level-feature renders as a series (tests/test_forge_levels.py proves each
 # one numerically against popper.dsl.features.levels.compute_level on real bars).
 _SUPPORTED_LEVELS = set(LEVEL_FEATURES)
-
-# ...but only THESE may anchor a stop or a target. The compiler resolves an exit
-# anchor at the FILL bar (`stop_lvl[i]` in popper/dsl/compiler.py, i = the bar the
-# trade opens on) and states the invariant "level[i] uses bars <= i-1, all complete
-# at bar i's open". That invariant holds for the swing and session levels; it does
-# NOT hold for prior_fractal_hi/lo (confirmation reads bar i's own high/low) or
-# bb_line (SMA includes bar i's close). Those three are only knowable at bar i's
-# CLOSE, so no live target can price an exit off them at the fill -- they stay
-# refused rather than silently rendered one bar stale.
-_EXIT_LEVELS = frozenset(
-    LEVEL_FEATURES - {"prior_fractal_hi", "prior_fractal_lo", "bb_line"}
-)
 _EMA = re.compile(r"^ema_(\d+)$")
 _PARAM = re.compile(r"^p\[(\w+)\]$")
 
@@ -48,17 +36,27 @@ def _wrapper_value(value, target: str = "pine") -> str:
 
 
 def _exit_anchor(spec: StrategySpec, rule, path: str) -> str:
-    """The level a stop/target anchors to, refusing what Pine cannot price."""
+    """The level a stop/target anchors to."""
     name = anchor_level(spec, rule.anchor)
     if name not in _SUPPORTED_LEVELS:
         raise PineUnsupported(f"Pine target does not implement level-feature {name!r} ({path})")
-    if name not in _EXIT_LEVELS:
-        raise PineUnsupported(
-            f"Pine target cannot anchor {path} to level-feature {name!r}: its value on "
-            "bar i depends on bar i's own OHLC, but the backtest resolves an exit anchor "
-            "at the fill bar, so the price is not knowable when the trade opens"
-        )
     return name
+
+
+def _exit_series(name: str) -> str:
+    """The Pine series an EXIT reads its anchor from, at the fill bar.
+
+    Most levels at bar i are functions of bars <= i-1, so the fill bar's own
+    value is already final and `level` is read as-is. bb_line and the two
+    fractals are not: they read bar i's own OHLC. popper/dsl/compiler.py's
+    `exit_anchor` shifts exactly those three (INTRA_BAR_LEVELS) one bar back
+    before resolving an exit, so the emitted code reads `level[1]` -- the last
+    fully-closed bar's value, which is what the backtest priced.
+
+    ENTRY anchors are NOT shifted, here or in the compiler: a resting order is
+    priced from the signal bar's close, when the value does exist.
+    """
+    return f"{name}[1]" if name in INTRA_BAR_LEVELS else name
 
 
 def _entry_anchor(spec: StrategySpec, name: str) -> str:
@@ -248,13 +246,13 @@ def _level_exit_lines(spec: StrategySpec) -> list[str]:
     """Freeze the stop/target on the bar the position OPENED, from that bar's levels.
 
     That is where popper/dsl/compiler.py resolves them (`try_open` reads
-    stop_lvl[i]/tgt_lvl[i] at the fill bar and never moves them afterwards), and
-    the levels allowed here are functions of bars 0..i-1, so the value is final
-    even during Pine's on-fill intrabar recalculation.
+    stop_lvl[i]/tgt_lvl[i] at the fill bar and never moves them afterwards).
+    `_exit_series` supplies the same series the compiler's `exit_anchor` builds,
+    so the value is final even during Pine's on-fill intrabar recalculation.
     """
     w = spec.wrapper
     if w.stop.type == "level":
-        anchor = _exit_anchor(spec, w.stop, "wrapper.stop")
+        anchor = _exit_series(_exit_anchor(spec, w.stop, "wrapper.stop"))
         stop_expr = f"{anchor} + ({_wrapper_value(w.stop.offset)})"
     else:
         stop_expr = (
@@ -262,7 +260,7 @@ def _level_exit_lines(spec: StrategySpec) -> list[str]:
             f"{_wrapper_value(w.stop.mult)}"
         )
     if w.target.type == "level":
-        anchor = _exit_anchor(spec, w.target, "wrapper.target")
+        anchor = _exit_series(_exit_anchor(spec, w.target, "wrapper.target"))
         target_expr = f"{anchor} + ({_wrapper_value(w.target.offset)})"
     else:
         target_expr = (
