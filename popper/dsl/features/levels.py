@@ -111,6 +111,15 @@ LEVEL_FEATURES = frozenset(_LEVELS)
 
 # which side of entry each level may sit on (compiler enforces SL=loss side,
 # TP=profit side). 'either' = usable both ways (e.g. bb_line).
+# Levels whose value at bar i reads bar i's OWN high/low/close, so the value is
+# NOT knowable at that bar's open -- which is exactly when a fill happens.
+#   bb_line          averages in bar i's close
+#   prior_fractal_*  confirms an i-2 fractal using bar i's high/low
+# Safe as a SIGNAL (evaluated at bar i's close, entry next bar) and safe as a
+# resting-order price (placed from bar i's close). NOT safe as an exit anchor
+# resolved at the fill bar -- see EXIT_ANCHOR_LAG in popper/dsl/compiler.py.
+INTRA_BAR_LEVELS = {"bb_line", "prior_fractal_hi", "prior_fractal_lo"}
+
 LOSS_SIDE = {"prior_fractal_lo", "prior_swing_wick_lo", "prior_swing_body_lo",
              "session_ny_lo", "session_london_lo", "session_asia_lo"}
 PROFIT_SIDE = {"prior_fractal_hi", "prior_swing_wick_hi", "prior_swing_body_hi",

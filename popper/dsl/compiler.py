@@ -38,7 +38,7 @@ from popper.artifacts.strategy_spec import StrategySpec
 from popper.data.timeframes import higher_feature_alias, normalize_timeframe, timeframe_minutes
 from popper.dsl.expr import BAR_COLS, eval_signal
 from popper.dsl.features import atr_14, compute_feature
-from popper.dsl.features.levels import compute_level
+from popper.dsl.features.levels import INTRA_BAR_LEVELS, compute_level
 from popper.dsl.validator import validate_spec
 
 _PARAM_REF = re.compile(r"^p\[(\w+)\]$")
@@ -161,15 +161,29 @@ class CompiledStrategy:
         w = spec.wrapper
         # exit resolution (v0.3): atr|level stops, ratio|level targets.
         # anchor level series precomputed ONCE — already point-in-time correct.
+        def exit_anchor(name: str) -> np.ndarray:
+            """A level series safe to price an exit from at the FILL bar.
+
+            Most levels at bar i use only bars <= i-1 and are complete at bar i's
+            open. Three are not: bb_line averages in bar i's close, and the
+            fractals confirm using bar i's high/low. Reading those at the fill
+            bar sets a stop from a price nobody could know yet, so they are
+            shifted one bar -- the last value that was genuinely available.
+            """
+            series = compute_level(name, bars)
+            if name in INTRA_BAR_LEVELS:
+                series = series.shift(1)
+            return series.to_numpy()
+
         sl_mult = stop_lvl = stop_off = None
         if w.stop.type == "level":
-            stop_lvl = compute_level(_resolve_name(w.stop.anchor, params), bars).to_numpy()
+            stop_lvl = exit_anchor(_resolve_name(w.stop.anchor, params))
             stop_off = _resolve(w.stop.offset, params)
         else:
             sl_mult = _resolve(w.stop.mult, params)
         rr = tgt_lvl = tgt_off = None
         if w.target.type == "level":
-            tgt_lvl = compute_level(_resolve_name(w.target.anchor, params), bars).to_numpy()
+            tgt_lvl = exit_anchor(_resolve_name(w.target.anchor, params))
             tgt_off = _resolve(w.target.offset, params)
         else:
             rr = _resolve(w.target.ratio, params)
