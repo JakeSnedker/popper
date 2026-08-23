@@ -3,13 +3,16 @@
 import re
 
 from popper.artifacts import StrategySpec
-from popper.dsl.features import SESSIONS
+from popper.dsl.features import OPENING_RANGE_BARS, SESSIONS
 from popper.dsl.features.levels import DEFAULT_SWING_N, INTRA_BAR_LEVELS, LEVEL_FEATURES
 from popper.forge.expr import anchor_level, compile_expression, input_name
 
 _SUPPORTED = {
     "atr_14", "session_ny", "rel_volume", "delta_proxy", "vol_regime",
     "trend_regime", "regime_score", "cusum_shift",
+    # step-4: the plain price / session / momentum features
+    "bb_line", "body_pressure", "candle_size", "opening_range", "psar",
+    "rsi_fast", "session_asia", "session_london",
 }
 # Every level-feature renders as a series (tests/test_forge_levels.py proves each
 # one numerically against popper.dsl.features.levels.compute_level on real bars).
@@ -124,9 +127,129 @@ double LevelBb(const int shift)
 }
 
 
-def _level_helper_source(names: set[str]) -> str:
-    used = {_level_call(name, "0").split("(")[0] for name in names}
-    return "".join(_LEVEL_HELPERS[key] for key in sorted(used)) + ("\n" if used else "")
+# Helpers backing a signal-FEATURE. Same shape as the level helpers: a pure
+# function of `shift`, so "the value at bar i" is one call, and the mirror in
+# tests/test_forge_features.py is the same function evaluated bar by bar.
+#
+# Some of these replay a recursion the Python seeds at its first bar. An EA has
+# no such origin, so it re-walks InpWarmupBars of history: the seed's influence
+# decays geometrically and the walk is what the mirror reproduces exactly.
+_FEATURE_HELPERS = {
+    "RsiFast": '''
+// Wilder RSI(7) as features/__init__.py::rsi_fast computes it. That seeds
+// ewm(alpha=1/7, adjust=False) on the FIRST close-to-close delta where iRSI seeds
+// on an SMA -- different values, so iRSI is not a match. Warm-up and a zero
+// average loss both return 50.0: the .fillna(50.0) at the end of the Python.
+double RsiFast(const int shift)
+{
+   int last = (int)MathMin(Bars(_Symbol, _Period) - 1, shift + InpWarmupBars);
+   if(last - shift < 7) return 50.0;
+   double gain = 0.0, loss = 0.0;
+   for(int i = last - 1; i >= shift; i--)
+   {
+      double delta = iClose(_Symbol, _Period, i) - iClose(_Symbol, _Period, i + 1);
+      double up = MathMax(delta, 0.0), down = MathMax(-delta, 0.0);
+      if(i == last - 1) { gain = up; loss = down; }
+      else { gain += (up - gain) / 7.0; loss += (down - loss) / 7.0; }
+   }
+   if(loss <= 0.0) return 50.0;
+   return 100.0 - 100.0 / (1.0 + gain / loss);
+}
+''',
+    "Psar": '''
+// Parabolic SAR (af 0.02, step 0.02, max 0.2) as features/__init__.py::psar runs
+// it. iSAR's flip and clamp rules differ, so the forward loop is replayed here.
+// The first bar of the walk has no SAR yet (the Python leaves out[0] NaN).
+double Psar(const int shift)
+{
+   int last = (int)MathMin(Bars(_Symbol, _Period) - 1, shift + InpWarmupBars);
+   if(last <= shift) return EMPTY_VALUE;
+   bool uptrend = true;
+   double af = 0.02;
+   double sar = iLow(_Symbol, _Period, last), ep = iHigh(_Symbol, _Period, last);
+   double out = EMPTY_VALUE;
+   for(int i = last - 1; i >= shift; i--)
+   {
+      int step = last - i;   // 1-based position in the walk == the Python loop's i
+      double high = iHigh(_Symbol, _Period, i), low = iLow(_Symbol, _Period, i);
+      sar = sar + af * (ep - sar);
+      if(uptrend)
+      {
+         double prev = iLow(_Symbol, _Period, i + 1);
+         sar = MathMin(sar, MathMin(prev, step >= 2 ? iLow(_Symbol, _Period, i + 2) : prev));
+         if(low < sar)      { uptrend = false; sar = ep; ep = low; af = 0.02; }
+         else if(high > ep) { ep = high; af = MathMin(af + 0.02, 0.2); }
+      }
+      else
+      {
+         double prev = iHigh(_Symbol, _Period, i + 1);
+         sar = MathMax(sar, MathMax(prev, step >= 2 ? iHigh(_Symbol, _Period, i + 2) : prev));
+         if(high > sar)    { uptrend = true; sar = ep; ep = high; af = 0.02; }
+         else if(low < ep) { ep = low; af = MathMin(af + 0.02, 0.2); }
+      }
+      out = sar;
+   }
+   return out;
+}
+''',
+    "OpeningRange": '''
+// High-low range of the first %(bars)d NY-session bars of the bar's OWN UTC day,
+// published only once all of them have printed (pos >= %(last)d in
+// features/__init__.py::opening_range) and then held for the rest of that day.
+double OpeningRange(const int shift)
+{
+   datetime now = iTime(_Symbol, _Period, shift) + InpBrokerToUtcHours * 3600;
+   if(now <= 0) return EMPTY_VALUE;
+   int today = (int)(now / 86400);
+   int total = Bars(_Symbol, _Period);
+   int oldest = shift;
+   for(int i = shift; i < total && i <= shift + InpLevelScanBars; i++)
+   {
+      datetime bar_utc = iTime(_Symbol, _Period, i) + InpBrokerToUtcHours * 3600;
+      if(bar_utc <= 0 || (int)(bar_utc / 86400) != today) break;
+      oldest = i;
+   }
+   int pos = -1;
+   double range_hi = EMPTY_VALUE, range_lo = EMPTY_VALUE, range = EMPTY_VALUE;
+   for(int i = oldest; i >= shift; i--)
+   {
+      MqlDateTime parts;
+      TimeToStruct(iTime(_Symbol, _Period, i) + InpBrokerToUtcHours * 3600, parts);
+      if(parts.hour < %(start)d || parts.hour >= %(end)d) continue;
+      pos++;
+      if(pos >= %(bars)d) continue;
+      double h = iHigh(_Symbol, _Period, i), l = iLow(_Symbol, _Period, i);
+      range_hi = range_hi == EMPTY_VALUE ? h : MathMax(range_hi, h);
+      range_lo = range_lo == EMPTY_VALUE ? l : MathMin(range_lo, l);
+      range = range_hi - range_lo;
+   }
+   return pos >= %(last)d ? range : EMPTY_VALUE;
+}
+''' % {"start": SESSIONS["ny"][0], "end": SESSIONS["ny"][1],
+       "bars": OPENING_RANGE_BARS, "last": OPENING_RANGE_BARS - 1},
+}
+
+# helpers that re-walk history and so need InpWarmupBars, and helpers that scan
+# back over calendar days and so need InpLevelScanBars
+_WARMUP_HELPERS = {"RsiFast", "Psar"}
+_SCAN_HELPERS = {"OpeningRange"}
+
+_HELPERS = {**_LEVEL_HELPERS, **_FEATURE_HELPERS}
+
+
+def _feature_helpers(features: set[str]) -> set[str]:
+    """The helper functions the emitted feature lines call."""
+    wanted = {"bb_line": "LevelBb", "rsi_fast": "RsiFast", "psar": "Psar",
+              "opening_range": "OpeningRange"}
+    return {helper for name, helper in wanted.items() if name in features}
+
+
+def _helper_source(names: set[str]) -> str:
+    return "".join(_HELPERS[key] for key in sorted(names)) + ("\n" if names else "")
+
+
+def _level_helper_names(names: set[str]) -> set[str]:
+    return {_level_call(name, "0").split("(")[0] for name in names}
 
 
 def _exit_anchor(spec: StrategySpec, rule, path: str) -> str:
@@ -232,11 +355,18 @@ def generate_mql5(spec: StrategySpec) -> str:
         "input int InpBrokerToUtcHours = 0;",
         "input int InpCusumScanBars = 5000;",
     ]
-    if levels:
+    helpers = _level_helper_names(levels) | _feature_helpers(features)
+    if levels or helpers & _SCAN_HELPERS:
         # ponytail: CALIBRATION KNOB. levels.py forward-fills a fractal and looks
         # back to the previous trading day with no bound; an EA has to bound the
         # scan. Raise it if a level goes EMPTY_VALUE on a thin/illiquid feed.
         inputs.append("input int InpLevelScanBars = 5000;")
+    if helpers & _WARMUP_HELPERS:
+        # ponytail: CALIBRATION KNOB. The Python seeds its recursions at the first
+        # bar of the dataset; an EA has no such origin and re-walks this much
+        # history instead. The seed's influence decays geometrically -- 2000 M5
+        # bars puts RSI(7) below 1e-9. Raise it if a feed's warm-up is thinner.
+        inputs.append("input int InpWarmupBars = 2000;")
     for name, grid in sorted(spec.param_space.items()):
         default = grid[len(grid) // 2]
         if isinstance(default, str):
@@ -268,11 +398,16 @@ def generate_mql5(spec: StrategySpec) -> str:
         match = _EMA.match(feature)
         if match:
             feature_lines.append(f"   double {feature} = BufferValue(hEMA{int(match.group(1))}, 1);")
-    if "session_ny" in features:
+    # ny first so a session_ny-only spec keeps emitting exactly what it always did
+    sessions = [s for s in ("ny", "asia", "london") if f"session_{s}" in features]
+    if sessions:
         feature_lines += [
             "   MqlDateTime utc;",
             "   TimeToStruct(iTime(_Symbol, _Period, 1) + InpBrokerToUtcHours * 3600, utc);",
-            "   double session_ny = (utc.hour >= 13 && utc.hour < 21) ? 1.0 : 0.0;",
+        ]
+        feature_lines += [
+            f"   double session_{s} = (utc.hour >= {SESSIONS[s][0]} && "
+            f"utc.hour < {SESSIONS[s][1]}) ? 1.0 : 0.0;" for s in sessions
         ]
     if {"rel_volume", "delta_proxy"} & features:
         feature_lines.append("   double rel_volume = RelativeVolume(1);")
@@ -286,6 +421,21 @@ def generate_mql5(spec: StrategySpec) -> str:
         feature_lines.append("   double regime_score = RegimeScore(1);")
     if "cusum_shift" in features:
         feature_lines.append("   double cusum_shift = CusumShift(1);")
+    if "candle_size" in features:
+        feature_lines.append("   double candle_size = high - low;")
+    if "body_pressure" in features:
+        feature_lines.append(
+            "   // a zero-range bar leaves body_pressure undefined, not zero\n"
+            "   double body_pressure = (high - low) == 0.0 ? EMPTY_VALUE"
+            " : (close - open) / (high - low);")
+    if "bb_line" in features:
+        feature_lines.append("   double bb_line = LevelBb(1);")
+    if "rsi_fast" in features:
+        feature_lines.append("   double rsi_fast = RsiFast(1);")
+    if "psar" in features:
+        feature_lines.append("   double psar = Psar(1);")
+    if "opening_range" in features:
+        feature_lines.append("   double opening_range = OpeningRange(1);")
 
     long_signal = compile_expression(spec.alpha.signal, "mql5")
     short_signal = compile_expression(spec.alpha.signal_short, "mql5") if spec.alpha.signal_short else "false"
@@ -479,7 +629,7 @@ bool PlacePending(const bool is_long, const double atr, const double signal_clos
             "         trade.PositionClose(_Symbol);",
         ]
 
-    level_helpers = _level_helper_source(levels)
+    level_helpers = _helper_source(helpers)
     position_lines = ["   if(PositionSelect(_Symbol)) return;"]
     if position_inner:
         position_lines = (["   if(PositionSelect(_Symbol))", "   {"]

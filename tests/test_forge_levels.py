@@ -21,6 +21,8 @@ from popper.data.bars import load_bars
 from popper.dsl.features import SESSIONS
 from popper.dsl.features.levels import INTRA_BAR_LEVELS, LEVEL_FEATURES, compute_level
 from popper.forge import forge_spec
+from popper.forge import mql5 as mql5_module
+from popper.forge import pine as pine_module
 from popper.forge.mql5 import _level_call, generate_mql5
 from popper.forge.pine import generate_pine
 
@@ -473,11 +475,16 @@ def test_trail_break_even_and_no_trade_still_fail_closed():
                 generate(sp)
 
 
-def test_an_unimplemented_alpha_feature_still_fails_closed():
+def test_an_unimplemented_alpha_feature_still_fails_closed(monkeypatch):
+    """Proved by taking a feature away, because every FEATURES name renders now.
+    The guard is what makes the NEXT one added to the DSL fail closed instead of
+    emitting an undefined identifier."""
     sp = spec(stop={"type": "level", "anchor": "prior_swing_wick_lo"})
     sp.alpha.features = ["atr_14", "psar"]
     sp.alpha.signal = "close > psar"
     sp.alpha.signal_short = "close < psar"
+    monkeypatch.setattr(pine_module, "_SUPPORTED", pine_module._SUPPORTED - {"psar"})
+    monkeypatch.setattr(mql5_module, "_SUPPORTED", mql5_module._SUPPORTED - {"psar"})
     for generate in (generate_pine, generate_mql5):
         with pytest.raises(ValueError, match="does not implement features"):
             generate(sp)

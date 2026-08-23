@@ -3,13 +3,16 @@
 import re
 
 from popper.artifacts import StrategySpec
-from popper.dsl.features import SESSIONS
+from popper.dsl.features import OPENING_RANGE_BARS, SESSIONS
 from popper.dsl.features.levels import DEFAULT_SWING_N, INTRA_BAR_LEVELS, LEVEL_FEATURES
 from popper.forge.expr import anchor_level, compile_expression, input_name
 
 _SUPPORTED = {
     "atr_14", "session_ny", "rel_volume", "delta_proxy", "vol_regime",
     "trend_regime", "regime_score", "cusum_shift",
+    # step-4: the plain price / session / momentum features
+    "bb_line", "body_pressure", "candle_size", "opening_range", "psar",
+    "rsi_fast", "session_asia", "session_london",
 }
 # Every level-feature renders as a series (tests/test_forge_levels.py proves each
 # one numerically against popper.dsl.features.levels.compute_level on real bars).
@@ -118,7 +121,108 @@ def _reject_unsupported(spec) -> None:
     _spec_levels(spec)  # raises on any anchor this target cannot render
 
 
-def _level_lines(names: set[str]) -> list[str]:
+def _plain_feature_lines(features: set[str]) -> list[str]:
+    """The price / session / momentum features, transliterated from features/.
+
+    tests/test_forge_features.py mirrors every line below back into Python and
+    asserts bar-for-bar equality with compute_feature on real US30 M5 bars, so
+    the warm-up rules and the fill-value quirks are checked numerically.
+    """
+    lines: list[str] = []
+    if "candle_size" in features:
+        lines.append("candle_size = high - low")
+    if "body_pressure" in features:
+        lines += [
+            "// (close-open)/(high-low); a zero-range bar is undefined, not zero",
+            "body_pressure = (high - low) == 0 ? na : (close - open) / (high - low)",
+        ]
+    if "bb_line" in features:
+        lines.append("bb_line = ta.sma(close, 20)")
+    if "rsi_fast" in features:
+        lines += [
+            "// Wilder RSI(7) as features/__init__.py::rsi_fast computes it. That seeds",
+            "// ewm(alpha=1/7, adjust=False) on the FIRST close-to-close delta, where",
+            "// ta.rsi seeds on an SMA -- different values, so this is not ta.rsi(close, 7).",
+            "// Warm-up and a zero average loss both fall through to 50.0: the .fillna(50).",
+            "rsi_delta = close - close[1]",
+            "var float rsi_gain = na",
+            "var float rsi_loss = na",
+            "rsi_gain := na(rsi_delta) ? na : na(rsi_gain[1]) ? math.max(rsi_delta, 0.0)"
+            " : rsi_gain[1] + (math.max(rsi_delta, 0.0) - rsi_gain[1]) / 7.0",
+            "rsi_loss := na(rsi_delta) ? na : na(rsi_loss[1]) ? math.max(-rsi_delta, 0.0)"
+            " : rsi_loss[1] + (math.max(-rsi_delta, 0.0) - rsi_loss[1]) / 7.0",
+            "rsi_fast = bar_index >= 7 and rsi_loss > 0"
+            " ? 100.0 - 100.0 / (1.0 + rsi_gain / rsi_loss) : 50.0",
+        ]
+    if "psar" in features:
+        lines += [
+            "// Parabolic SAR (af 0.02, step 0.02, max 0.2) as features/__init__.py::psar",
+            "// runs it. ta.sar's flip and clamp rules differ, so the forward loop is",
+            "// replayed here. Bar 0 has no SAR (the Python leaves out[0] NaN).",
+            "var bool psar_up = true",
+            "var float psar_af = 0.02",
+            "var float psar_ep = na",
+            "var float psar_sar = na",
+            "var float psar_value = na",
+            "if bar_index == 0",
+            "    psar_sar := low",
+            "    psar_ep := high",
+            "else",
+            "    psar_sar := psar_sar + psar_af * (psar_ep - psar_sar)",
+            "    if psar_up",
+            "        psar_sar := math.min(psar_sar,"
+            " math.min(low[1], bar_index >= 2 ? low[2] : low[1]))",
+            "        if low < psar_sar",
+            "            psar_up := false",
+            "            psar_sar := psar_ep",
+            "            psar_ep := low",
+            "            psar_af := 0.02",
+            "        else if high > psar_ep",
+            "            psar_ep := high",
+            "            psar_af := math.min(psar_af + 0.02, 0.2)",
+            "    else",
+            "        psar_sar := math.max(psar_sar,"
+            " math.max(high[1], bar_index >= 2 ? high[2] : high[1]))",
+            "        if high > psar_sar",
+            "            psar_up := true",
+            "            psar_sar := psar_ep",
+            "            psar_ep := high",
+            "            psar_af := 0.02",
+            "        else if low < psar_ep",
+            "            psar_ep := low",
+            "            psar_af := math.min(psar_af + 0.02, 0.2)",
+            "    psar_value := psar_sar",
+            "psar = psar_value",
+        ]
+    if "opening_range" in features:
+        start, end = SESSIONS["ny"]
+        n = OPENING_RANGE_BARS
+        lines += [
+            f"// range of the first {n} NY-session bars of the bar's own UTC day, published",
+            "// only once all of them have printed and then held for the rest of that day",
+            "or_utc_day = math.floor(time / 86400000)",
+            f'or_in_ny = hour(time, "UTC") >= {start} and hour(time, "UTC") < {end}',
+            "var int or_pos = -1",
+            "var float or_hi = na",
+            "var float or_lo = na",
+            "var float or_range = na",
+            "if or_utc_day != or_utc_day[1]",
+            "    or_pos := -1",
+            "    or_hi := na",
+            "    or_lo := na",
+            "    or_range := na",
+            "if or_in_ny",
+            "    or_pos += 1",
+            f"    if or_pos < {n}",
+            "        or_hi := na(or_hi) ? high : math.max(or_hi, high)",
+            "        or_lo := na(or_lo) ? low : math.min(or_lo, low)",
+            "        or_range := or_hi - or_lo",
+            f"opening_range = or_pos >= {n - 1} ? or_range : na",
+        ]
+    return lines
+
+
+def _level_lines(names: set[str], defined: set[str] = frozenset()) -> list[str]:
     """Render each level-feature exactly as popper/dsl/features/levels.py computes it.
 
     tests/test_forge_levels.py mirrors these lines back into Python and asserts
@@ -179,7 +283,7 @@ def _level_lines(names: set[str]) -> list[str]:
                 f"if lvl_in_{session}",
                 f"    {acc} := na({acc}) ? {src} : {pick}({acc}, {src})",
             ]
-    if "bb_line" in names:
+    if "bb_line" in names and "bb_line" not in defined:
         lines.append("bb_line = ta.sma(close, 20)")
     return lines
 
@@ -332,8 +436,12 @@ def generate_pine(spec: StrategySpec) -> str:
         match = _EMA.match(feature)
         if match:
             lines.append(f"{feature} = ta.ema(close, {int(match.group(1))})")
-    if "session_ny" in features:
-        lines.append("session_ny = hour(time, \"UTC\") >= 13 and hour(time, \"UTC\") < 21 ? 1.0 : 0.0")
+    # ny first so a session_ny-only spec keeps emitting exactly what it always did
+    for session in ("ny", "asia", "london"):
+        if f"session_{session}" in features:
+            start, end = SESSIONS[session]
+            lines.append(f"session_{session} = hour(time, \"UTC\") >= {start} and "
+                         f"hour(time, \"UTC\") < {end} ? 1.0 : 0.0")
     if {"rel_volume", "delta_proxy"} & features:
         lines.append("rel_volume = nz(volume, 1.0) / ta.sma(nz(volume, 1.0), 20)[1]")
     if "delta_proxy" in features:
@@ -367,7 +475,8 @@ def generate_pine(spec: StrategySpec) -> str:
             "cusum_shift = cusum_pos - cusum_neg",
         ]
 
-    lines += _level_lines(_spec_levels(spec))
+    lines += _plain_feature_lines(features)
+    lines += _level_lines(_spec_levels(spec), features)
 
     long_signal = compile_expression(spec.alpha.signal, "pine")
     short_signal = compile_expression(spec.alpha.signal_short, "pine") if spec.alpha.signal_short else "false"
