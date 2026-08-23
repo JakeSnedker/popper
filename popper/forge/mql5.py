@@ -3,18 +3,176 @@
 import re
 
 from popper.artifacts import StrategySpec
-from popper.forge.expr import compile_expression, input_name
+from popper.dsl.features import SESSIONS
+from popper.dsl.features.levels import DEFAULT_SWING_N, LEVEL_FEATURES
+from popper.forge.expr import anchor_level, compile_expression, input_name
 
 _SUPPORTED = {
     "atr_14", "session_ny", "rel_volume", "delta_proxy", "vol_regime",
     "trend_regime", "regime_score", "cusum_shift",
 }
+# Every level-feature renders as a series (tests/test_forge_levels.py proves each
+# one numerically against popper.dsl.features.levels.compute_level on real bars).
+_SUPPORTED_LEVELS = set(LEVEL_FEATURES)
+
+# ...but only THESE may anchor a stop or a target. The compiler resolves an exit
+# anchor at the FILL bar (`stop_lvl[i]` in popper/dsl/compiler.py) and states the
+# invariant "level[i] uses bars <= i-1, all complete at bar i's open". That holds
+# for the swing and session levels; it does NOT hold for prior_fractal_hi/lo
+# (confirmation reads bar i's own high/low) or bb_line (the SMA includes bar i's
+# close). The EA prices its exits at the open of the fill bar, so those three
+# have no value to read there -- they stay refused rather than rendered stale.
+_EXIT_LEVELS = frozenset(
+    LEVEL_FEATURES - {"prior_fractal_hi", "prior_fractal_lo", "bb_line"}
+)
 _EMA = re.compile(r"^ema_(\d+)$")
 _PARAM = re.compile(r"^p\[(\w+)\]$")
 
 
 class Mql5Unsupported(ValueError):
     pass
+
+
+def _level_call(name: str, shift: str) -> str:
+    """The MQL5 expression for level-feature `name` evaluated at bar `shift`."""
+    if name.startswith("prior_swing_"):
+        return (f"LevelSwing({shift}, {DEFAULT_SWING_N}, "
+                f"{'true' if name.endswith('_hi') else 'false'}, "
+                f"{'true' if '_body_' in name else 'false'})")
+    if name.startswith("prior_fractal_"):
+        return f"LevelFractal({shift}, {'true' if name.endswith('_hi') else 'false'})"
+    if name.startswith("session_"):
+        start, end = SESSIONS[name.split("_")[1]]
+        return (f"LevelSession({shift}, {start}, {end}, "
+                f"{'true' if name.endswith('_hi') else 'false'})")
+    if name == "bb_line":
+        return f"LevelBb({shift})"
+    raise Mql5Unsupported(f"MQL5 target does not implement level-feature {name!r}")
+
+
+_LEVEL_HELPERS = {
+    "LevelSwing": '''
+// Rolling extreme of the PRIOR n bars -- the shift(1) in levels.py, which is what
+// keeps a swing level causal. Bar `shift` itself is never looked at.
+double LevelSwing(const int shift, const int n, const bool want_high, const bool body)
+{
+   if(Bars(_Symbol, _Period) < shift + n + 1) return EMPTY_VALUE;
+   double best = EMPTY_VALUE;
+   for(int i = shift + 1; i <= shift + n; i++)
+   {
+      double v;
+      if(body) v = want_high ? MathMax(iOpen(_Symbol, _Period, i), iClose(_Symbol, _Period, i))
+                             : MathMin(iOpen(_Symbol, _Period, i), iClose(_Symbol, _Period, i));
+      else     v = want_high ? iHigh(_Symbol, _Period, i) : iLow(_Symbol, _Period, i);
+      if(best == EMPTY_VALUE) best = v;
+      else best = want_high ? MathMax(best, v) : MathMin(best, v);
+   }
+   return best;
+}
+''',
+    "LevelFractal": '''
+// Most recent CONFIRMED Bill Williams 5-bar fractal, carried forward. A fractal
+// at bar j needs 2 higher/lower bars on EACH side, so it is only confirmed two
+// bars later: the scan starts at shift+2 and reads j-1/j-2, which are already
+// complete. Scanning back for the newest one IS the forward fill.
+double LevelFractal(const int shift, const bool want_high)
+{
+   int last = (int)MathMin(Bars(_Symbol, _Period) - 3, shift + 1 + InpLevelScanBars);
+   for(int j = shift + 2; j <= last; j++)
+   {
+      double v = want_high ? iHigh(_Symbol, _Period, j) : iLow(_Symbol, _Period, j);
+      double a = want_high ? iHigh(_Symbol, _Period, j - 1) : iLow(_Symbol, _Period, j - 1);
+      double b = want_high ? iHigh(_Symbol, _Period, j - 2) : iLow(_Symbol, _Period, j - 2);
+      double c = want_high ? iHigh(_Symbol, _Period, j + 1) : iLow(_Symbol, _Period, j + 1);
+      double d = want_high ? iHigh(_Symbol, _Period, j + 2) : iLow(_Symbol, _Period, j + 2);
+      if(want_high ? (v > a && v > b && v > c && v > d) : (v < a && v < b && v < c && v < d))
+         return v;
+   }
+   return EMPTY_VALUE;   // no fractal within the scan window: treat as not formed
+}
+''',
+    "LevelSession": '''
+// High/low of the PREVIOUS day's session, mapped onto every bar of the current
+// day. Previous-day is unambiguously complete, so it is causal. "Previous day"
+// means the previous day PRESENT IN THE DATA (levels.py shifts the per-day
+// groupby), so a weekend maps Monday back to Friday.
+double LevelSession(const int shift, const int start_hour, const int end_hour, const bool want_high)
+{
+   datetime now = iTime(_Symbol, _Period, shift) + InpBrokerToUtcHours * 3600;
+   if(now <= 0) return EMPTY_VALUE;
+   int today = (int)(now / 86400);
+   int prev = -1;
+   double best = EMPTY_VALUE;
+   int total = Bars(_Symbol, _Period);
+   for(int i = shift; i < total && i <= shift + InpLevelScanBars; i++)
+   {
+      datetime bar_utc = iTime(_Symbol, _Period, i) + InpBrokerToUtcHours * 3600;
+      if(bar_utc <= 0) break;
+      int day = (int)(bar_utc / 86400);
+      if(day >= today) continue;
+      if(prev < 0) prev = day;
+      if(day != prev) break;              // walked past the previous day
+      MqlDateTime parts;
+      TimeToStruct(bar_utc, parts);
+      if(parts.hour < start_hour || parts.hour >= end_hour) continue;
+      double v = want_high ? iHigh(_Symbol, _Period, i) : iLow(_Symbol, _Period, i);
+      if(best == EMPTY_VALUE) best = v;
+      else best = want_high ? MathMax(best, v) : MathMin(best, v);
+   }
+   return best;   // EMPTY_VALUE when that day never traded the session
+}
+''',
+    "LevelBb": '''
+// Bollinger middle line = SMA(20) of close, INCLUDING bar `shift` itself.
+double LevelBb(const int shift)
+{
+   if(Bars(_Symbol, _Period) < shift + 20) return EMPTY_VALUE;
+   double sum = 0.0;
+   for(int i = shift; i < shift + 20; i++) sum += iClose(_Symbol, _Period, i);
+   return sum / 20.0;
+}
+''',
+}
+
+
+def _level_helper_source(names: set[str]) -> str:
+    used = {_level_call(name, "0").split("(")[0] for name in names}
+    return "".join(_LEVEL_HELPERS[key] for key in sorted(used)) + ("\n" if used else "")
+
+
+def _exit_anchor(spec: StrategySpec, rule, path: str) -> str:
+    name = anchor_level(spec, rule.anchor)
+    if name not in _SUPPORTED_LEVELS:
+        raise Mql5Unsupported(f"MQL5 target does not implement level-feature {name!r} ({path})")
+    if name not in _EXIT_LEVELS:
+        raise Mql5Unsupported(
+            f"MQL5 target cannot anchor {path} to level-feature {name!r}: its value on "
+            "bar i depends on bar i's own OHLC, but the backtest resolves an exit anchor "
+            "at the fill bar, so the price is not knowable when the trade opens"
+        )
+    return name
+
+
+def _entry_anchor(spec: StrategySpec, name: str) -> str:
+    resolved = anchor_level(spec, name)
+    if resolved not in _SUPPORTED_LEVELS:
+        raise Mql5Unsupported(
+            f"MQL5 target does not implement level-feature {resolved!r} (wrapper.entry.anchor)"
+        )
+    return resolved
+
+
+def _spec_levels(spec: StrategySpec) -> set[str]:
+    """Every level-feature this spec needs rendered."""
+    names = set()
+    w = spec.wrapper
+    if w.stop.type == "level":
+        names.add(_exit_anchor(spec, w.stop, "wrapper.stop"))
+    if w.target.type == "level":
+        names.add(_exit_anchor(spec, w.target, "wrapper.target"))
+    if w.entry.type != "market" and w.entry.anchor:
+        names.add(_entry_anchor(spec, w.entry.anchor))
+    return names
 
 
 def _number(value) -> str:
@@ -33,8 +191,10 @@ def _validate(spec: StrategySpec) -> None:
                          if feature not in _SUPPORTED and not _EMA.match(feature))
     if unsupported:
         raise Mql5Unsupported(f"MQL5 target does not implement features: {', '.join(unsupported)}")
-    if spec.wrapper.stop.type != "atr" or spec.wrapper.target.type != "ratio":
-        raise Mql5Unsupported("MQL5 target currently requires ATR stop and ratio target")
+    if spec.wrapper.stop.type not in ("atr", "level"):
+        raise Mql5Unsupported(f"MQL5 target does not implement stop type {spec.wrapper.stop.type!r}")
+    if spec.wrapper.target.type not in ("ratio", "level"):
+        raise Mql5Unsupported(f"MQL5 target does not implement target type {spec.wrapper.target.type!r}")
     if spec.wrapper.trail.type != "none" or spec.wrapper.break_even.type != "none":
         raise Mql5Unsupported("MQL5 target does not yet support trail or break-even wrappers")
     if spec.wrapper.constraints.no_trade:
@@ -44,24 +204,27 @@ def _validate(spec: StrategySpec) -> None:
 def _reject_unsupported(spec) -> None:
     """Refuse to emit code that would trade differently from the backtest.
 
-    Offset-priced resting entries and time exits are rendered below. An ANCHORED
-    resting order is not: its price is a level-feature series, and MQL5
-    implements no level features at all -- the same reason `_validate` rejects a
-    level stop or target. Falling back to an offset price would deploy a
-    strategy nobody tested.
+    A level exit combined with a RESTING entry is the one combination left out:
+    the compiler measures 1R from the fill bar's level, and RiskLots needs that
+    distance when the pending order is SENT, bars before the level is known.
+    Sizing off the placement-bar level would deploy a position size nobody
+    backtested.
     """
-    entry = spec.wrapper.entry
-    if entry.type != "market" and entry.anchor:
+    w = spec.wrapper
+    level_exit = w.stop.type == "level" or w.target.type == "level"
+    if level_exit and w.entry.type != "market":
         raise Mql5Unsupported(
-            f"MQL5 target cannot price a {entry.type} entry off level-feature "
-            f"{entry.anchor!r}: level features are not implemented for this target"
+            f"MQL5 target cannot combine a level exit with a {w.entry.type} entry: "
+            "the risk distance is only known at the fill, after the order is sent"
         )
+    _spec_levels(spec)  # raises on any anchor this target cannot render
 
 
 def generate_mql5(spec: StrategySpec) -> str:
     _reject_unsupported(spec)
     _validate(spec)
     features = set(spec.alpha.features)
+    levels = _spec_levels(spec)
     ema_periods = {int(match.group(1)) for feature in features if (match := _EMA.match(feature))}
     ema_periods |= {20, 48, 50, 240}
     title = re.sub(r"[^A-Za-z0-9 _.-]", "", spec.name)[:80]
@@ -72,8 +235,16 @@ def generate_mql5(spec: StrategySpec) -> str:
         "input int InpBrokerToUtcHours = 0;",
         "input int InpCusumScanBars = 5000;",
     ]
+    if levels:
+        # ponytail: CALIBRATION KNOB. levels.py forward-fills a fractal and looks
+        # back to the previous trading day with no bound; an EA has to bound the
+        # scan. Raise it if a level goes EMPTY_VALUE on a thin/illiquid feed.
+        inputs.append("input int InpLevelScanBars = 5000;")
     for name, grid in sorted(spec.param_space.items()):
-        inputs.append(f"input double {input_name(name, 'mql5')} = {_number(grid[len(grid) // 2])};")
+        default = grid[len(grid) // 2]
+        if isinstance(default, str):
+            continue  # a categorical (an anchor sweep): resolved to a name, not an input
+        inputs.append(f"input double {input_name(name, 'mql5')} = {_number(default)};")
 
     handles = ["int hATR = INVALID_HANDLE;", "int hRSI7 = INVALID_HANDLE;", "int hSAR = INVALID_HANDLE;"]
     handles += [f"int hEMA{period} = INVALID_HANDLE;" for period in sorted(ema_periods)]
@@ -143,6 +314,21 @@ def generate_mql5(spec: StrategySpec) -> str:
         offset = _wrapper_value(entry.offset)
         # a limit rests at a BETTER price than the signal close, a stop at a WORSE one
         price_sign = "-" if entry.type == "limit" else "+"
+        if entry.anchor:
+            # the backtest rests the order AT the anchor's value on the SIGNAL bar
+            # (shift 1 here) and applies no offset -- compiler.py: rest_px =
+            # entry_lvl[i]. A level that has not formed drops the signal rather
+            # than resting an order at a made-up price.
+            price_line = (
+                f"double anchor = {_level_call(_entry_anchor(spec, entry.anchor), '1')};\n"
+                "   if(anchor == EMPTY_VALUE || !MathIsValidNumber(anchor)) return false;\n"
+                "   double price = NormalizeDouble(anchor, digits);"
+            )
+        else:
+            price_line = (
+                f"double price = NormalizeDouble(signal_close {price_sign} "
+                f"(is_long ? 1.0 : -1.0) * {offset} * atr, digits);"
+            )
         through = ("market <= price : market >= price" if entry.type == "limit"
                    else "market >= price : market <= price")
         buy_fn, sell_fn = (("BuyLimit", "SellLimit") if entry.type == "limit"
@@ -172,7 +358,7 @@ void RepriceStops(const double atr)
 bool PlacePending(const bool is_long, const double atr, const double signal_close)
 {{
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   double price = NormalizeDouble(signal_close {price_sign} (is_long ? 1.0 : -1.0) * {offset} * atr, digits);
+   {price_line}
    double market = SymbolInfoDouble(_Symbol, is_long ? SYMBOL_ASK : SYMBOL_BID);
    // price is already through the resting level: the backtest fills such a touch at
    // the bar's open, so take it at market rather than let the broker reject it
@@ -238,6 +424,55 @@ bool PlacePending(const bool is_long, const double atr, const double signal_clos
             "   }",
         ]
 
+    w = spec.wrapper
+    if w.stop.type == "level" or w.target.type == "level":
+        stop_expr = (
+            f"{_level_call(_exit_anchor(spec, w.stop, 'wrapper.stop'), '0')}"
+            f" + ({_wrapper_value(w.stop.offset)})" if w.stop.type == "level"
+            else f"price + (is_long ? -1.0 : 1.0) * atr * {stop_mult}"
+        )
+        target_expr = (
+            f"{_level_call(_exit_anchor(spec, w.target, 'wrapper.target'), '0')}"
+            f" + ({_wrapper_value(w.target.offset)})" if w.target.type == "level"
+            else f"price + (is_long ? 1.0 : -1.0) * stop_distance * {rr}"
+        )
+        open_position = f'''bool OpenPosition(const bool is_long, const double atr)
+{{
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double price = SymbolInfoDouble(_Symbol, is_long ? SYMBOL_ASK : SYMBOL_BID);
+   // resolved on the bar the trade OPENS on -- shift 0, the bar whose first tick
+   // fired this call -- exactly where compiler.py's try_open reads stop_lvl[i].
+   double stop = {stop_expr};
+   if(stop == EMPTY_VALUE || !MathIsValidNumber(stop)) return false;
+   double stop_distance = MathAbs(price - stop);
+   double target = {target_expr};
+   if(target == EMPTY_VALUE || !MathIsValidNumber(target)) return false;
+   // GUARD, same as try_open: an unformed anchor or a level on the wrong side of
+   // entry is an incoherent trade. The backtest never opened it, so neither do we.
+   if(is_long ? !(stop < price && target > price) : !(stop > price && target < price))
+      return false;
+   double lots = RiskLots(stop_distance);
+   if(lots <= 0.0) return false;
+   return is_long
+      ? trade.Buy(lots, _Symbol, 0.0, NormalizeDouble(stop, digits), NormalizeDouble(target, digits), "Popper {spec.id or ''}")
+      : trade.Sell(lots, _Symbol, 0.0, NormalizeDouble(stop, digits), NormalizeDouble(target, digits), "Popper {spec.id or ''}");
+}}'''
+    else:
+        open_position = f'''bool OpenPosition(const bool is_long, const double atr)
+{{
+   double stop_distance = atr * {stop_mult};
+   double reward_distance = stop_distance * {rr};
+   double lots = RiskLots(stop_distance);
+   if(lots <= 0.0) return false;
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double price = SymbolInfoDouble(_Symbol, is_long ? SYMBOL_ASK : SYMBOL_BID);
+   double stop = NormalizeDouble(price + (is_long ? -stop_distance : stop_distance), digits);
+   double target = NormalizeDouble(price + (is_long ? reward_distance : -reward_distance), digits);
+   return is_long
+      ? trade.Buy(lots, _Symbol, 0.0, stop, target, "Popper {spec.id or ''}")
+      : trade.Sell(lots, _Symbol, 0.0, stop, target, "Popper {spec.id or ''}");
+}}'''
+
     if spec.wrapper.time_stop.type == "bars":
         max_bars = _wrapper_value(spec.wrapper.time_stop.max_bars)
         position_inner += [
@@ -247,6 +482,7 @@ bool PlacePending(const bool is_long, const double atr, const double signal_clos
             "         trade.PositionClose(_Symbol);",
         ]
 
+    level_helpers = _level_helper_source(levels)
     position_lines = ["   if(PositionSelect(_Symbol)) return;"]
     if position_inner:
         position_lines = (["   if(PositionSelect(_Symbol))", "   {"]
@@ -367,20 +603,7 @@ double RiskLots(const double stop_distance)
    return NormalizeLots(risk_money / ((stop_distance / tick_size) * tick_value));
 }}
 
-bool OpenPosition(const bool is_long, const double atr)
-{{
-   double stop_distance = atr * {stop_mult};
-   double reward_distance = stop_distance * {rr};
-   double lots = RiskLots(stop_distance);
-   if(lots <= 0.0) return false;
-   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   double price = SymbolInfoDouble(_Symbol, is_long ? SYMBOL_ASK : SYMBOL_BID);
-   double stop = NormalizeDouble(price + (is_long ? -stop_distance : stop_distance), digits);
-   double target = NormalizeDouble(price + (is_long ? reward_distance : -reward_distance), digits);
-   return is_long
-      ? trade.Buy(lots, _Symbol, 0.0, stop, target, "Popper {spec.id or ''}")
-      : trade.Sell(lots, _Symbol, 0.0, stop, target, "Popper {spec.id or ''}");
-}}
+{level_helpers}{open_position}
 {pending_helpers}
 int OnInit()
 {{

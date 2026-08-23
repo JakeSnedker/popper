@@ -23,6 +23,7 @@ from popper.forge import pine as _pine
 TARGETS = ("pine", "mql5")
 
 _SUPPORTED_BY = {"pine": _pine._SUPPORTED, "mql5": _mql5._SUPPORTED}
+_SUPPORTED_LEVELS_BY = {"pine": _pine._SUPPORTED_LEVELS, "mql5": _mql5._SUPPORTED_LEVELS}
 
 # Wrapper and alpha capabilities each target implements. These are read off the
 # emitters' own _validate guards; when a guard is removed, update the entry here
@@ -31,11 +32,16 @@ _CAPABILITIES: dict[str, dict[str, bool]] = {
     "pine": {
         "entry.market": True,
         "entry.limit/stop (offset)": True,
-        "entry.limit/stop (level anchor)": False,
+        "entry.limit/stop (level anchor)": True,
         "stop.atr": True,
-        "stop.level": False,
+        "stop.level": True,
         "target.ratio": True,
-        "target.level": False,
+        "target.level": True,
+        # the three levels whose value on bar i reads bar i's own OHLC cannot price
+        # an exit the compiler resolves at the fill bar -- both emitters refuse them
+        "level exit anchored to prior_fractal_hi/lo or bb_line": False,
+        # 1R is only known at the fill; a broker needs the volume at placement
+        "level exit with a resting entry": False,
         "trail.atr": False,
         "break_even.after_r": False,
         "time_stop.bars": True,
@@ -48,11 +54,16 @@ _CAPABILITIES: dict[str, dict[str, bool]] = {
     "mql5": {
         "entry.market": True,
         "entry.limit/stop (offset)": True,
-        "entry.limit/stop (level anchor)": False,
+        "entry.limit/stop (level anchor)": True,
         "stop.atr": True,
-        "stop.level": False,
+        "stop.level": True,
         "target.ratio": True,
-        "target.level": False,
+        "target.level": True,
+        # the three levels whose value on bar i reads bar i's own OHLC cannot price
+        # an exit the compiler resolves at the fill bar -- both emitters refuse them
+        "level exit anchored to prior_fractal_hi/lo or bb_line": False,
+        # 1R is only known at the fill; a broker needs the volume at placement
+        "level exit with a resting entry": False,
         "trail.atr": False,
         "break_even.after_r": False,
         "time_stop.bars": True,
@@ -94,13 +105,14 @@ def coverage_for(target: str) -> TargetCoverage:
     supported = set(_SUPPORTED_BY[target])
     features = set(FEATURES)
     # ema_<n> is a family the emitters do handle, so count it as one concept
-    levels = set(LEVEL_FEATURES)
+    levels = set(LEVEL_FEATURES) & set(_SUPPORTED_LEVELS_BY[target])
+    all_levels = set(LEVEL_FEATURES)
     return TargetCoverage(
         target=target,
         features_supported=sorted(features & supported),
         features_missing=sorted(features - supported),
-        levels_supported=sorted(levels & supported),
-        levels_missing=sorted(levels - supported),
+        levels_supported=sorted(levels),
+        levels_missing=sorted(all_levels - levels),
         capabilities=dict(_CAPABILITIES[target]),
     )
 

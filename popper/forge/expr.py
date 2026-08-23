@@ -17,6 +17,22 @@ def input_name(name: str, target: str) -> str:
     return "Inp" + "".join(part[:1].upper() + part[1:] for part in parts if part)
 
 
+def anchor_level(spec, value: str) -> str:
+    """Resolve a stop/target/entry anchor to a literal level-feature name.
+
+    An anchor is either the name itself or a `p[...]` ref into param_space (a
+    swept categorical). An emitter renders ONE strategy, so it takes the same
+    grid point the compiler defaults to -- the middle, as
+    CompiledStrategy.default_params does. Sweeping the anchor needs one forge
+    run per grid point.
+    """
+    match = re.match(r"^p\[(\w+)\]$", value)
+    if not match:
+        return value
+    grid = spec.param_space[match.group(1)]
+    return str(grid[len(grid) // 2])
+
+
 def compile_expression(text: str, target: str) -> str:
     if target not in {"pine", "mql5"}:
         raise ValueError(f"unknown forge target {target!r}")

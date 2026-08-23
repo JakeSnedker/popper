@@ -201,12 +201,29 @@ def test_limit_and_time_stop_render_together():
 # --- what still refuses to render -------------------------------------------
 
 @pytest.mark.parametrize("kind", ["limit", "stop"])
-def test_an_anchored_resting_order_still_fails_closed(kind):
-    """Neither target implements level features, so an anchored order has no
-    price to rest at. Downgrading it to an offset would deploy an untested one."""
+def test_an_anchored_resting_order_now_rests_at_the_level(kind):
+    """Both targets render level features now (tests/test_forge_levels.py proves
+    each one against compute_level), so an anchored order has a price to rest at:
+    the anchor's value on the SIGNAL bar, with no offset -- exactly `rest_px =
+    entry_lvl[i]` in the compiler."""
     sp = spec(entry={"type": kind, "anchor": "prior_fractal_lo", "expiry_bars": 5})
+    pine, mql = generate_pine(sp), generate_mql5(sp)
+    keyword = "limit" if kind == "limit" else "stop"
+    assert f'strategy.entry("Long", strategy.long, {keyword}=prior_fractal_lo)' in pine
+    assert "atr_14" not in pine.split("strategy.entry(\"Long\"")[1].split("\n")[0]
+    assert "double anchor = LevelFractal(1, false);" in mql
+    assert forge_spec(sp).files
+
+
+@pytest.mark.parametrize("kind", ["limit", "stop"])
+def test_a_level_exit_with_a_resting_order_still_fails_closed(kind):
+    """The compiler measures 1R from the FILL bar's level. A broker needs the
+    volume when the order is sent, bars earlier -- sizing off the placement bar
+    would deploy a position size nobody backtested."""
+    sp = spec(stop={"type": "level", "anchor": "prior_swing_wick_lo"},
+              entry={"type": kind, "offset": 0.5, "expiry_bars": 5})
     for generate in (generate_pine, generate_mql5):
-        with pytest.raises(ValueError, match="level features are not implemented"):
+        with pytest.raises(ValueError, match="only known at the fill"):
             generate(sp)
-    with pytest.raises(ForgeUnsupported, match="level features are not implemented"):
+    with pytest.raises(ForgeUnsupported, match="only known at the fill"):
         forge_spec(sp)

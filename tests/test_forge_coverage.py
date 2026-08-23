@@ -12,10 +12,10 @@ from popper.dsl.features import FEATURES
 from popper.dsl.features.levels import LEVEL_FEATURES
 from popper.forge.coverage import TARGETS, coverage, coverage_for, report
 
-# measured 2026-08-22, at DSL v0.4
+# measured 2026-08-23, at DSL v0.4 (level-feature vocabulary landed in both targets)
 BASELINE = {
-    "pine": {"features": 8, "levels": 0, "capabilities": 6},
-    "mql5": {"features": 8, "levels": 0, "capabilities": 7},
+    "pine": {"features": 8, "levels": 13, "capabilities": 9},
+    "mql5": {"features": 8, "levels": 13, "capabilities": 10},
 }
 
 

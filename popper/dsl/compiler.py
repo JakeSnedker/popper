@@ -10,8 +10,18 @@ event-driven over the bars. Timing model (no look-ahead):
     bar's data, so they only tighten the following bars.
 
 v0.3 (docs/DSL_v0.3_EXIT_SPEC.md §4): stops/targets may anchor to a level-
-feature series (PIT-correct by construction — level[i] uses bars <= i-1, all
-complete at bar i's open). stop = level[i] + offset; target = level[i] + offset.
+feature series. stop = level[i] + offset; target = level[i] + offset, resolved at
+the FILL bar i.
+
+KNOWN GAP (found 2026-08-23 while building the Forge emitters, unfixed here
+because changing it moves every recorded v0.3 backtest): that resolution assumed
+"level[i] uses bars <= i-1, all complete at bar i's open". True for the swing and
+session levels; FALSE for prior_fractal_hi/lo (confirmation reads bar i's own
+high/low) and bb_line (the SMA includes bar i's close). Anchoring an exit to
+those three reads a value that does not exist at the fill, so a backtest using
+them is optimistic by up to one bar. popper/forge/{pine,mql5}.py refuse to render
+them as exit anchors for exactly this reason; tests/test_forge_levels.py has the
+demonstration.
 GUARD: an entry whose anchor is NaN, or whose level sits on the wrong side of
 entry (stop >= entry for a long, target <= entry, mirrored for shorts), is
 SKIPPED — an incoherent trade is never opened.
