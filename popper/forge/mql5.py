@@ -3,9 +3,14 @@
 import re
 
 from popper.artifacts import StrategySpec
-from popper.dsl.features import OPENING_RANGE_BARS, SESSIONS
+from popper.dsl.features import (
+    OB_DISP_MULT,
+    OPENING_RANGE_BARS,
+    SESSIONS,
+    SWING_LOOKBACK,
+)
 from popper.dsl.features.levels import DEFAULT_SWING_N, INTRA_BAR_LEVELS, LEVEL_FEATURES
-from popper.forge.expr import anchor_level, compile_expression, input_name
+from popper.forge.expr import anchor_level, compile_expression, input_name, smc_knob
 
 _SUPPORTED = {
     "atr_14", "session_ny", "rel_volume", "delta_proxy", "vol_regime",
@@ -15,6 +20,8 @@ _SUPPORTED = {
     "rsi_fast", "session_asia", "session_london",
     # step-5: window features (no structural pivots)
     "fvg", "htf_trend", "liquidity_sweep",
+    # step-6: the SMC pack, built on the shared confirmed-swing pivots
+    "bos", "cisd", "equilibrium", "fib_pos", "mss", "ob_bear_mid", "ob_bull_mid",
 }
 # Every level-feature renders as a series (tests/test_forge_levels.py proves each
 # one numerically against popper.dsl.features.levels.compute_level on real bars).
@@ -244,6 +251,169 @@ double PopEma(const int shift, const int period)
    return value;
 }
 ''',
+    "SwingPivot": '''
+// Most recent CONFIRMED swing pivot -- features/__init__.py::_swing_pivots, SHARED
+// by bos/mss/equilibrium/fib_pos/order blocks. A centre needs `lookback` strictly
+// lower (higher) bars on EACH side, so it is only visible once `lookback` bars have
+// printed after it: the newest candidate is at shift + lookback. Scanning back for
+// the newest qualifying centre IS the forward fill.
+double SwingPivot(const int shift, const int lookback, const bool want_high)
+{
+   int total = Bars(_Symbol, _Period);
+   int last = (int)MathMin(total - 1 - lookback, shift + lookback + InpStructureBars);
+   for(int m = shift + lookback; m <= last; m++)
+   {
+      double v = want_high ? iHigh(_Symbol, _Period, m) : iLow(_Symbol, _Period, m);
+      bool ok = true;
+      for(int k = 1; k <= lookback; k++)
+      {
+         double newer = want_high ? iHigh(_Symbol, _Period, m - k) : iLow(_Symbol, _Period, m - k);
+         double older = want_high ? iHigh(_Symbol, _Period, m + k) : iLow(_Symbol, _Period, m + k);
+         if(want_high ? (newer >= v || older >= v) : (newer <= v || older <= v))
+         {
+            ok = false;
+            break;
+         }
+      }
+      if(ok) return v;
+   }
+   return EMPTY_VALUE;   // no pivot within the scan window: treat as not formed
+}
+''',
+    "Bos": '''
+// Break of Structure: +1 the bar the close FIRST crosses above the most recent
+// confirmed swing high, -1 below the swing low, else 0. A fresh-break EVENT, so
+// the previous bar's state is recomputed at shift + 1 rather than remembered.
+double Bos(const int shift, const int lookback)
+{
+   if(Bars(_Symbol, _Period) < shift + 2) return 0.0;   // out[0] is 0 in the Python
+   double hi = SwingPivot(shift, lookback, true);
+   double lo = SwingPivot(shift, lookback, false);
+   double hi_prev = SwingPivot(shift + 1, lookback, true);
+   double lo_prev = SwingPivot(shift + 1, lookback, false);
+   double c = iClose(_Symbol, _Period, shift);
+   double c_prev = iClose(_Symbol, _Period, shift + 1);
+   bool up_now  = hi      != EMPTY_VALUE && c      > hi;
+   bool up_prev = hi_prev != EMPTY_VALUE && c_prev > hi_prev;
+   bool dn_now  = lo      != EMPTY_VALUE && c      < lo;
+   bool dn_prev = lo_prev != EMPTY_VALUE && c_prev < lo_prev;
+   if(up_now && !up_prev) return 1.0;
+   if(dn_now && !dn_prev) return -1.0;
+   return 0.0;
+}
+''',
+    "Cisd": '''
+// Change in State of Delivery, features/__init__.py::cisd. Track the current run of
+// same-direction closes, arm that run's OPEN, and fire when a close crosses back
+// through it. The Python walks from bar 0; the EA replays InpStructureBars instead.
+double Cisd(const int shift, const int run)
+{
+   int last = (int)MathMin(Bars(_Symbol, _Period) - 1, shift + InpStructureBars);
+   int run_dir = 0, run_len = 0;
+   double run_open = EMPTY_VALUE, arm_dn = EMPTY_VALUE, arm_up = EMPTY_VALUE;
+   double out = 0.0;
+   for(int i = last; i >= shift; i--)
+   {
+      double o = iOpen(_Symbol, _Period, i), c = iClose(_Symbol, _Period, i);
+      out = 0.0;
+      if(arm_dn != EMPTY_VALUE && c > arm_dn)      { out =  1.0; arm_dn = EMPTY_VALUE; }
+      else if(arm_up != EMPTY_VALUE && c < arm_up) { out = -1.0; arm_up = EMPTY_VALUE; }
+      int d = c > o ? 1 : (c < o ? -1 : 0);
+      if(d != 0 && d == run_dir) run_len++;
+      else if(d != 0) { run_dir = d; run_len = 1; run_open = o; }
+      if(run_dir == -1 && run_len >= run)     arm_dn = run_open;
+      else if(run_dir == 1 && run_len >= run) arm_up = run_open;
+   }
+   return out;
+}
+''',
+    "Equilibrium": '''
+// 50% of the current dealing range: midpoint of the last confirmed swing high/low.
+double Equilibrium(const int shift, const int lookback)
+{
+   double hi = SwingPivot(shift, lookback, true), lo = SwingPivot(shift, lookback, false);
+   if(hi == EMPTY_VALUE || lo == EMPTY_VALUE) return EMPTY_VALUE;
+   return (hi + lo) / 2.0;
+}
+''',
+    "FibPos": '''
+// Where the close sits in the last confirmed swing range: 0 at the low, 1 at the
+// high, outside [0,1] on a break-out. A zero-width range is undefined.
+double FibPos(const int shift, const int lookback)
+{
+   double hi = SwingPivot(shift, lookback, true), lo = SwingPivot(shift, lookback, false);
+   if(hi == EMPTY_VALUE || lo == EMPTY_VALUE || hi == lo) return EMPTY_VALUE;
+   return (iClose(_Symbol, _Period, shift) - lo) / (hi - lo);
+}
+''',
+    "Mss": '''
+// Market Structure Shift: the first BOS whose direction OPPOSES the previous one.
+// features/__init__.py carries `prev` forward from bar 0; walking back to the
+// nearest EARLIER non-zero BOS is the same statement read from the other end.
+double Mss(const int shift, const int lookback)
+{
+   double b = Bos(shift, lookback);
+   if(b == 0.0) return 0.0;
+   int total = Bars(_Symbol, _Period);
+   for(int i = shift + 1; i < total && i <= shift + InpStructureBars; i++)
+   {
+      double previous = Bos(i, lookback);
+      if(previous != 0.0) return previous != b ? b : 0.0;
+   }
+   return 0.0;   // no earlier BOS in range, so prev is 0 and this is not a shift
+}
+''',
+    "OrderBlock": '''
+// 50% level of the nearest UNMITIGATED order block -- features/__init__.py::
+// _order_blocks. A bullish OB is the last down-close candle before an up-move that
+// DISPLACES (breaks the confirmed swing high, or a body >= disp * ATR); cleared
+// once price fully sweeps back through the zone. The ATR is the Python's exact
+// atr_14 (ewm seeded on the first true range), recursed inside this same walk --
+// iATR seeds on an SMA and would arm the displacement test on different candles.
+double OrderBlock(const int shift, const int lookback, const double disp, const bool want_bull)
+{
+   int last = (int)MathMin(Bars(_Symbol, _Period) - 1, shift + InpStructureBars);
+   double b_lo = EMPTY_VALUE, b_hi = EMPTY_VALUE, s_lo = EMPTY_VALUE, s_hi = EMPTY_VALUE;
+   double d_lo = EMPTY_VALUE, d_hi = EMPTY_VALUE, u_lo = EMPTY_VALUE, u_hi = EMPTY_VALUE;
+   double atr = 0.0, prev_close = EMPTY_VALUE, out = EMPTY_VALUE;
+   int seen = 0;
+   for(int i = last; i >= shift; i--)
+   {
+      double o = iOpen(_Symbol, _Period, i), h = iHigh(_Symbol, _Period, i);
+      double l = iLow(_Symbol, _Period, i), c = iClose(_Symbol, _Period, i);
+      double range = prev_close == EMPTY_VALUE ? h - l
+         : MathMax(h - l, MathMax(MathAbs(h - prev_close), MathAbs(l - prev_close)));
+      atr = seen == 0 ? range : atr + (range - atr) / 14.0;
+      seen++;
+      prev_close = c;
+      double atr_value = seen >= 14 ? atr : EMPTY_VALUE;
+      if(c > o && d_lo != EMPTY_VALUE)
+      {
+         double sw = SwingPivot(i, lookback, true);
+         bool broke = sw != EMPTY_VALUE && c > sw;
+         bool big = atr_value != EMPTY_VALUE && (c - o) >= disp * atr_value;
+         if(broke || big) { b_lo = d_lo; b_hi = d_hi; }
+      }
+      if(c < o && u_lo != EMPTY_VALUE)
+      {
+         double sw = SwingPivot(i, lookback, false);
+         bool broke = sw != EMPTY_VALUE && c < sw;
+         bool big = atr_value != EMPTY_VALUE && (o - c) >= disp * atr_value;
+         if(broke || big) { s_lo = u_lo; s_hi = u_hi; }
+      }
+      if(b_lo != EMPTY_VALUE && l < b_lo) { b_lo = EMPTY_VALUE; b_hi = EMPTY_VALUE; }
+      if(s_hi != EMPTY_VALUE && h > s_hi) { s_lo = EMPTY_VALUE; s_hi = EMPTY_VALUE; }
+      out = EMPTY_VALUE;
+      if(want_bull) { if(b_lo != EMPTY_VALUE) out = (b_hi + b_lo) / 2.0; }
+      else          { if(s_hi != EMPTY_VALUE) out = (s_hi + s_lo) / 2.0; }
+      // an up-close bar can only arm a BULL block from a previous DOWN-close
+      // candle, so a candle is never its own order block
+      if(c < o)      { d_lo = l; d_hi = h; }
+      else if(c > o) { u_lo = l; u_hi = h; }
+   }
+   return out;
+}
+''',
     "OpeningRange": '''
 // High-low range of the first %(bars)d NY-session bars of the bar's OWN UTC day,
 // published only once all of them have printed (pos >= %(last)d in
@@ -285,20 +455,48 @@ double OpeningRange(const int shift)
 # back over calendar days and so need InpLevelScanBars
 _WARMUP_HELPERS = {"RsiFast", "Psar", "PopEma"}
 _SCAN_HELPERS = {"OpeningRange"}
+# helpers that replay a structural state machine over a bounded history window
+_STRUCTURE_HELPERS = {"SwingPivot", "Bos", "Cisd", "Equilibrium", "FibPos", "Mss",
+                      "OrderBlock"}
 
 _HELPERS = {**_LEVEL_HELPERS, **_FEATURE_HELPERS}
+
+# MQL5 wants a function defined before it is called, so emission order is fixed
+# here rather than sorted: dependencies first. The four level helpers keep the
+# alphabetical order they have always been emitted in.
+_HELPER_ORDER = [
+    "LevelBb", "LevelFractal", "LevelSession", "LevelSwing",
+    "Fvg", "LiquiditySweep", "OpeningRange", "PopEma", "Psar", "RsiFast",
+    "SwingPivot", "Bos", "Cisd", "Equilibrium", "FibPos", "Mss", "OrderBlock",
+]
+assert set(_HELPER_ORDER) == set(_HELPERS)
+
+_SMC_HELPER = {"bos": "Bos", "mss": "Mss", "cisd": "Cisd",
+               "equilibrium": "Equilibrium", "ob_bull_mid": "OrderBlock",
+               "ob_bear_mid": "OrderBlock"}
 
 
 def _feature_helpers(features: set[str]) -> set[str]:
     """The helper functions the emitted feature lines call."""
     wanted = {"bb_line": "LevelBb", "rsi_fast": "RsiFast", "psar": "Psar",
               "opening_range": "OpeningRange", "fvg": "Fvg",
-              "liquidity_sweep": "LiquiditySweep", "htf_trend": "PopEma"}
-    return {helper for name, helper in wanted.items() if name in features}
+              "liquidity_sweep": "LiquiditySweep", "htf_trend": "PopEma",
+              "fib_pos": "FibPos"}
+    used = {helper for name, helper in wanted.items() if name in features}
+    for name in features:
+        knob = smc_knob(name)
+        if knob:
+            used.add(_SMC_HELPER[knob[0]])
+    if used & {"Bos", "Mss", "Equilibrium", "FibPos", "OrderBlock"}:
+        used.add("SwingPivot")
+    if "Mss" in used:
+        used.add("Bos")
+    return used
 
 
 def _helper_source(names: set[str]) -> str:
-    return "".join(_HELPERS[key] for key in sorted(names)) + ("\n" if names else "")
+    return "".join(_HELPERS[key] for key in _HELPER_ORDER if key in names) + (
+        "\n" if names else "")
 
 
 def _level_helper_names(names: set[str]) -> set[str]:
@@ -361,7 +559,8 @@ def _validate(spec: StrategySpec) -> None:
     if spec.alpha.higher_timeframe_features:
         raise Mql5Unsupported("MQL5 target does not yet implement causal higher-timeframe features")
     unsupported = sorted(feature for feature in spec.alpha.features
-                         if feature not in _SUPPORTED and not _EMA.match(feature))
+                         if feature not in _SUPPORTED and not _EMA.match(feature)
+                         and smc_knob(feature) is None)
     if unsupported:
         raise Mql5Unsupported(f"MQL5 target does not implement features: {', '.join(unsupported)}")
     if spec.wrapper.stop.type not in ("atr", "level"):
@@ -414,6 +613,12 @@ def generate_mql5(spec: StrategySpec) -> str:
         # back to the previous trading day with no bound; an EA has to bound the
         # scan. Raise it if a level goes EMPTY_VALUE on a thin/illiquid feed.
         inputs.append("input int InpLevelScanBars = 5000;")
+    if helpers & _STRUCTURE_HELPERS:
+        # ponytail: CALIBRATION KNOB. The SMC state machines run from the first bar
+        # of the dataset in Python; an EA replays this much history instead. It must
+        # comfortably exceed the spacing between confirmed pivots at the lookback in
+        # use -- a large bos_<n> on a thin feed needs a larger window.
+        inputs.append("input int InpStructureBars = 1000;")
     if helpers & _WARMUP_HELPERS:
         # ponytail: CALIBRATION KNOB. The Python seeds its recursions at the first
         # bar of the dataset; an EA has no such origin and re-walks this much
@@ -493,6 +698,21 @@ def generate_mql5(spec: StrategySpec) -> str:
         feature_lines.append("   double fvg = Fvg(1);")
     if "liquidity_sweep" in features:
         feature_lines.append("   double liquidity_sweep = LiquiditySweep(1);")
+    for name in sorted(features):
+        knob = smc_knob(name)
+        if not knob:
+            continue
+        base, n = knob
+        if base in ("bos", "mss", "cisd"):
+            call = f"{_SMC_HELPER[base]}(1, {n})"
+        elif base == "equilibrium":
+            call = f"Equilibrium(1, {n})"
+        else:
+            call = (f"OrderBlock(1, {n}, {_number(OB_DISP_MULT)}, "
+                    f"{'true' if base == 'ob_bull_mid' else 'false'})")
+        feature_lines.append(f"   double {name} = {call};")
+    if "fib_pos" in features:
+        feature_lines.append(f"   double fib_pos = FibPos(1, {SWING_LOOKBACK});")
     if "htf_trend" in features:
         feature_lines += [
             "   double htf_ema_fast = PopEma(1, 48);",

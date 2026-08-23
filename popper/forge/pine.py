@@ -3,9 +3,15 @@
 import re
 
 from popper.artifacts import StrategySpec
-from popper.dsl.features import OPENING_RANGE_BARS, SESSIONS
+from popper.dsl.features import (
+    CISD_RUN,
+    OB_DISP_MULT,
+    OPENING_RANGE_BARS,
+    SESSIONS,
+    SWING_LOOKBACK,
+)
 from popper.dsl.features.levels import DEFAULT_SWING_N, INTRA_BAR_LEVELS, LEVEL_FEATURES
-from popper.forge.expr import anchor_level, compile_expression, input_name
+from popper.forge.expr import anchor_level, compile_expression, input_name, smc_knob
 
 _SUPPORTED = {
     "atr_14", "session_ny", "rel_volume", "delta_proxy", "vol_regime",
@@ -15,6 +21,8 @@ _SUPPORTED = {
     "rsi_fast", "session_asia", "session_london",
     # step-5: window features (no structural pivots)
     "fvg", "htf_trend", "liquidity_sweep",
+    # step-6: the SMC pack, built on the shared confirmed-swing pivots
+    "bos", "cisd", "equilibrium", "fib_pos", "mss", "ob_bear_mid", "ob_bull_mid",
 }
 # Every level-feature renders as a series (tests/test_forge_levels.py proves each
 # one numerically against popper.dsl.features.levels.compute_level on real bars).
@@ -91,7 +99,8 @@ def _validate(spec: StrategySpec) -> None:
     if spec.alpha.higher_timeframe_features:
         raise PineUnsupported("Pine target does not yet implement causal higher-timeframe features")
     unsupported = sorted(feature for feature in spec.alpha.features
-                         if feature not in _SUPPORTED and not _EMA.match(feature))
+                         if feature not in _SUPPORTED and not _EMA.match(feature)
+                         and smc_knob(feature) is None)
     if unsupported:
         raise PineUnsupported(f"Pine target does not implement features: {', '.join(unsupported)}")
     if spec.wrapper.stop.type not in ("atr", "level"):
@@ -253,6 +262,203 @@ def _plain_feature_lines(features: set[str]) -> list[str]:
             "        or_range := or_hi - or_lo",
             f"opening_range = or_pos >= {n - 1} ? or_range : na",
         ]
+    return lines
+
+
+def _pivot_lines(lookback: int) -> list[str]:
+    """features/__init__.py::_swing_pivots for one lookback, unrolled.
+
+    The centre is bar [L] and is only confirmable once L bars have printed on
+    each side of it, so it is read L bars back -- that delay is what keeps the
+    pivot causal. `var` carries the last confirmed one forward (the ffill).
+    The comparison chain is unrolled rather than looped because a Pine series
+    offset must be a constant for the compiler to size its history buffer.
+    """
+    n = lookback
+    def chain(src: str, cmp_: str) -> str:
+        return " and ".join(
+            f"{src}[{n - k}] {cmp_} {src}[{n}]" for k in range(1, n + 1)
+        ) + " and " + " and ".join(
+            f"{src}[{n + k}] {cmp_} {src}[{n}]" for k in range(1, n + 1)
+        )
+    return [
+        f"// confirmed swing pivots, lookback {n} "
+        "(features/__init__.py::_swing_pivots)",
+        f"var float pop_swing_hi_{n} = na",
+        f"var float pop_swing_lo_{n} = na",
+        f"if bar_index >= {2 * n} and ({chain('high', '<')})",
+        f"    pop_swing_hi_{n} := high[{n}]",
+        f"if bar_index >= {2 * n} and ({chain('low', '>')})",
+        f"    pop_swing_lo_{n} := low[{n}]",
+    ]
+
+
+def _pop_atr_lines() -> list[str]:
+    """features/__init__.py::atr_14, re-derived rather than taken from ta.atr.
+
+    ta.atr seeds Wilder smoothing on an SMA of the first 14 true ranges; the
+    Python seeds on the first one. The order block's displacement test is a
+    threshold on this value, so the two seeds would arm different candles.
+    """
+    return [
+        "// exact atr_14 for the order-block displacement test (NOT ta.atr: different seed)",
+        "pop_true_range = bar_index == 0 ? high - low : math.max(high - low,"
+        " math.max(math.abs(high - close[1]), math.abs(low - close[1])))",
+        "var float pop_atr_raw = na",
+        "pop_atr_raw := na(pop_atr_raw[1]) ? pop_true_range"
+        " : pop_atr_raw[1] + (pop_true_range - pop_atr_raw[1]) / 14.0",
+        "pop_atr_14 = bar_index >= 13 ? pop_atr_raw : na",
+    ]
+
+
+def _bos_lines(n: int) -> list[str]:
+    """features/__init__.py::bos -- a fresh-break EVENT, so the previous bar's
+    state is recomputed from [1] rather than carried in a bool series."""
+    return [
+        f"pop_bos_up_{n} = na(pop_swing_hi_{n}) ? false : close > pop_swing_hi_{n}",
+        f"pop_bos_dn_{n} = na(pop_swing_lo_{n}) ? false : close < pop_swing_lo_{n}",
+        f"pop_bos_up_prev_{n} = na(pop_swing_hi_{n}[1]) ? false"
+        f" : close[1] > pop_swing_hi_{n}[1]",
+        f"pop_bos_dn_prev_{n} = na(pop_swing_lo_{n}[1]) ? false"
+        f" : close[1] < pop_swing_lo_{n}[1]",
+        f"pop_bos_{n} = bar_index < 1 ? 0.0"
+        f" : pop_bos_up_{n} and not pop_bos_up_prev_{n} ? 1.0"
+        f" : pop_bos_dn_{n} and not pop_bos_dn_prev_{n} ? -1.0 : 0.0",
+    ]
+
+
+def _mss_lines(name: str, n: int) -> list[str]:
+    return [
+        "// the first BOS whose direction OPPOSES the previous BOS (a structural flip)",
+        f"var float pop_mss_prev_{n} = 0.0",
+        f"float {name} = 0.0",
+        f"if pop_bos_{n} != 0.0",
+        f"    {name} := pop_mss_prev_{n} != 0.0 and pop_bos_{n} != pop_mss_prev_{n}"
+        f" ? pop_bos_{n} : 0.0",
+        f"    pop_mss_prev_{n} := pop_bos_{n}",
+    ]
+
+
+def _order_block_lines(n: int) -> list[str]:
+    """features/__init__.py::_order_blocks, one state machine feeding both mids."""
+    disp = _number(OB_DISP_MULT)
+    return [
+        "// nearest UNMITIGATED order block: the last opposite-close candle before a",
+        f"// displacing move (breaks the confirmed swing, or a body >= {disp} * ATR),",
+        "// cleared once price fully sweeps back through the zone",
+        f"var float pop_ob_bull_lo_{n} = na",
+        f"var float pop_ob_bull_hi_{n} = na",
+        f"var float pop_ob_bear_lo_{n} = na",
+        f"var float pop_ob_bear_hi_{n} = na",
+        f"var float pop_ob_down_lo_{n} = na",
+        f"var float pop_ob_down_hi_{n} = na",
+        f"var float pop_ob_up_lo_{n} = na",
+        f"var float pop_ob_up_hi_{n} = na",
+        f"float pop_ob_bull_mid_{n} = na",
+        f"float pop_ob_bear_mid_{n} = na",
+        f"if close > open and not na(pop_ob_down_lo_{n})",
+        f"    if (not na(pop_swing_hi_{n}) and close > pop_swing_hi_{n})"
+        f" or (not na(pop_atr_14) and (close - open) >= {disp} * pop_atr_14)",
+        f"        pop_ob_bull_lo_{n} := pop_ob_down_lo_{n}",
+        f"        pop_ob_bull_hi_{n} := pop_ob_down_hi_{n}",
+        f"if close < open and not na(pop_ob_up_lo_{n})",
+        f"    if (not na(pop_swing_lo_{n}) and close < pop_swing_lo_{n})"
+        f" or (not na(pop_atr_14) and (open - close) >= {disp} * pop_atr_14)",
+        f"        pop_ob_bear_lo_{n} := pop_ob_up_lo_{n}",
+        f"        pop_ob_bear_hi_{n} := pop_ob_up_hi_{n}",
+        f"if not na(pop_ob_bull_lo_{n}) and low < pop_ob_bull_lo_{n}",
+        f"    pop_ob_bull_lo_{n} := na",
+        f"    pop_ob_bull_hi_{n} := na",
+        f"if not na(pop_ob_bear_hi_{n}) and high > pop_ob_bear_hi_{n}",
+        f"    pop_ob_bear_lo_{n} := na",
+        f"    pop_ob_bear_hi_{n} := na",
+        f"if not na(pop_ob_bull_lo_{n})",
+        f"    pop_ob_bull_mid_{n} := (pop_ob_bull_hi_{n} + pop_ob_bull_lo_{n}) / 2.0",
+        f"if not na(pop_ob_bear_hi_{n})",
+        f"    pop_ob_bear_mid_{n} := (pop_ob_bear_hi_{n} + pop_ob_bear_lo_{n}) / 2.0",
+        "// the candidate candles are tracked separately from the bar being judged, and",
+        "// an up-close bar can only arm a BULL block from a previous DOWN-close candle,",
+        "// so a candle is never its own order block",
+        "if close < open",
+        f"    pop_ob_down_lo_{n} := low",
+        f"    pop_ob_down_hi_{n} := high",
+        "else if close > open",
+        f"    pop_ob_up_lo_{n} := low",
+        f"    pop_ob_up_hi_{n} := high",
+    ]
+
+
+def _cisd_lines(name: str, run: int) -> list[str]:
+    """features/__init__.py::cisd -- arm the run's OPEN, fire on the cross back."""
+    return [
+        f"// Change in State of Delivery, run {run}",
+        f"var float pop_cisd_arm_dn_{run} = na",
+        f"var float pop_cisd_arm_up_{run} = na",
+        f"var int pop_cisd_dir_{run} = 0",
+        f"var int pop_cisd_len_{run} = 0",
+        f"var float pop_cisd_open_{run} = na",
+        f"float {name} = 0.0",
+        f"if not na(pop_cisd_arm_dn_{run}) and close > pop_cisd_arm_dn_{run}",
+        f"    {name} := 1.0",
+        f"    pop_cisd_arm_dn_{run} := na",
+        f"else if not na(pop_cisd_arm_up_{run}) and close < pop_cisd_arm_up_{run}",
+        f"    {name} := -1.0",
+        f"    pop_cisd_arm_up_{run} := na",
+        f"int pop_cisd_d_{run} = close > open ? 1 : close < open ? -1 : 0",
+        f"if pop_cisd_d_{run} != 0 and pop_cisd_d_{run} == pop_cisd_dir_{run}",
+        f"    pop_cisd_len_{run} += 1",
+        f"else if pop_cisd_d_{run} != 0",
+        f"    pop_cisd_dir_{run} := pop_cisd_d_{run}",
+        f"    pop_cisd_len_{run} := 1",
+        f"    pop_cisd_open_{run} := open",
+        f"if pop_cisd_dir_{run} == -1 and pop_cisd_len_{run} >= {run}",
+        f"    pop_cisd_arm_dn_{run} := pop_cisd_open_{run}",
+        f"else if pop_cisd_dir_{run} == 1 and pop_cisd_len_{run} >= {run}",
+        f"    pop_cisd_arm_up_{run} := pop_cisd_open_{run}",
+    ]
+
+
+def _structural_lines(features: set[str]) -> list[str]:
+    """The SMC pack. `bos_20` and friends are name FAMILIES, so the knob is read
+    off the suffix and one pivot block is shared by every feature using it."""
+    knobs = {name: smc_knob(name) for name in features}
+    knobs = {name: k for name, k in knobs.items() if k}
+    pivots = {k for _, (base, k) in knobs.items() if base != "cisd"}
+    if "fib_pos" in features:
+        pivots.add(SWING_LOOKBACK)
+    if not pivots and not knobs:
+        return []
+    lines: list[str] = []
+    for n in sorted(pivots):
+        lines += _pivot_lines(n)
+    if any(base.startswith("ob_") for base, _ in knobs.values()):
+        lines += _pop_atr_lines()
+    if "fib_pos" in features:
+        n = SWING_LOOKBACK
+        lines += [
+            "// where the close sits in the last confirmed swing range: 0 at the low,",
+            "// 1 at the high, outside [0,1] on a break-out. A zero-width range is na.",
+            f"pop_fib_span_{n} = pop_swing_hi_{n} - pop_swing_lo_{n}",
+            f"fib_pos = pop_fib_span_{n} == 0 ? na"
+            f" : (close - pop_swing_lo_{n}) / pop_fib_span_{n}",
+        ]
+    for name in sorted(n for n, (b, _) in knobs.items() if b == "equilibrium"):
+        n = knobs[name][1]
+        lines.append(f"{name} = (pop_swing_hi_{n} + pop_swing_lo_{n}) / 2.0")
+    # mss is built ON bos, so every lookback either needs it
+    for n in sorted({k for _, (base, k) in knobs.items() if base in ("bos", "mss")}):
+        lines += _bos_lines(n)
+    for name in sorted(n for n, (b, _) in knobs.items() if b == "bos"):
+        lines.append(f"{name} = pop_bos_{knobs[name][1]}")
+    for name in sorted(n for n, (b, _) in knobs.items() if b == "mss"):
+        lines += _mss_lines(name, knobs[name][1])
+    for n in sorted({k for _, (base, k) in knobs.items() if base.startswith("ob_")}):
+        lines += _order_block_lines(n)
+    for name in sorted(n for n, (b, _) in knobs.items() if b.startswith("ob_")):
+        base, n = knobs[name]
+        lines.append(f"{name} = pop_{base}_{n}")
+    for name in sorted(n for n, (b, _) in knobs.items() if b == "cisd"):
+        lines += _cisd_lines(name, knobs[name][1])
     return lines
 
 
@@ -510,6 +716,7 @@ def generate_pine(spec: StrategySpec) -> str:
         ]
 
     lines += _plain_feature_lines(features)
+    lines += _structural_lines(features)
     lines += _level_lines(_spec_levels(spec), features)
 
     long_signal = compile_expression(spec.alpha.signal, "pine")

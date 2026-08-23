@@ -4,10 +4,33 @@ import ast
 import re
 
 from popper.dsl.expr import parse_signal
+from popper.dsl.features import CISD_RUN, SWING_LOOKBACK
 
 
 class ForgeExpressionError(ValueError):
     pass
+
+
+# The SMC name families: one tunable knob carried as a suffix, exactly like
+# ema_<n>. Mirrors _SMC_BASE / _SMC_RE in popper/dsl/features/__init__.py --
+# both emitters read this, so the bound and the defaults live in one place.
+_SMC_BASES = ("bos", "mss", "equilibrium", "ob_bull_mid", "ob_bear_mid", "cisd")
+_SMC = re.compile(rf"^({'|'.join(_SMC_BASES)})_(\d+)$")
+
+
+def smc_knob(feature: str) -> tuple[str, int] | None:
+    """(base, knob) for a structural feature, or None if it is not one.
+
+    The bare name carries the module default -- `bos` is `bos_2` and `cisd` is
+    `cisd_1` -- and the suffix bound matches resolve_feature's, so a name the
+    DSL would reject never reaches an emitter as a renderable family member.
+    """
+    if feature in _SMC_BASES:
+        return feature, CISD_RUN if feature == "cisd" else SWING_LOOKBACK
+    match = _SMC.match(feature)
+    if not match or not 1 <= int(match.group(2)) <= 100:
+        return None
+    return match.group(1), int(match.group(2))
 
 
 def input_name(name: str, target: str) -> str:
