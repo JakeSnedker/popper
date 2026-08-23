@@ -2,6 +2,7 @@ import pytest
 
 from popper.artifacts import StrategySpec
 from popper.forge import ForgeUnsupported, forge_record, forge_spec
+from popper.forge import mql5, pine
 from popper.forge.expr import compile_expression
 
 
@@ -74,7 +75,12 @@ def test_record_must_be_promoted():
         forge_record(record)
 
 
-def test_unsupported_feature_fails_closed():
+def test_unsupported_feature_fails_closed(monkeypatch):
+    """Every FEATURES name renders now, so the guard is proved by taking one
+    away -- it is what makes the NEXT feature added to the DSL fail closed
+    rather than emit an undefined identifier."""
+    monkeypatch.setattr(pine, "_SUPPORTED", pine._SUPPORTED - {"liquidity_sweep"})
+    monkeypatch.setattr(mql5, "_SUPPORTED", mql5._SUPPORTED - {"liquidity_sweep"})
     spec = _spec(alpha={"features": ["liquidity_sweep"], "signal": "liquidity_sweep > 0"},
                  param_space={"sl_atr": [1.5], "rr": [2.0]})
     with pytest.raises(ForgeUnsupported, match="does not implement"):

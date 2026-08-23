@@ -13,6 +13,8 @@ _SUPPORTED = {
     # step-4: the plain price / session / momentum features
     "bb_line", "body_pressure", "candle_size", "opening_range", "psar",
     "rsi_fast", "session_asia", "session_london",
+    # step-5: window features (no structural pivots)
+    "fvg", "htf_trend", "liquidity_sweep",
 }
 # Every level-feature renders as a series (tests/test_forge_levels.py proves each
 # one numerically against popper.dsl.features.levels.compute_level on real bars).
@@ -193,6 +195,38 @@ def _plain_feature_lines(features: set[str]) -> list[str]:
             "            psar_af := math.min(psar_af + 0.02, 0.2)",
             "    psar_value := psar_sar",
             "psar = psar_value",
+        ]
+    if "fvg" in features:
+        lines += [
+            "// Fair Value Gap presence. features/__init__.py compares against NaN during",
+            "// warm-up, which is False, so the first two bars are 0.0 and not na.",
+            "fvg = (not na(high[2]) and high[2] < low ? 1.0 : 0.0)"
+            " - (not na(low[2]) and low[2] > high ? 1.0 : 0.0)",
+        ]
+    if "liquidity_sweep" in features:
+        lines += [
+            "// [1] is the .shift(1) on the rolling window: this bar is never part of the",
+            "// baseline it has to pierce. Warm-up compares against NaN, so it is 0.0.",
+            "ls_prior_lo = ta.lowest(low, 20)[1]",
+            "ls_prior_hi = ta.highest(high, 20)[1]",
+            "liquidity_sweep = (not na(ls_prior_lo) and low < ls_prior_lo"
+            " and close > ls_prior_lo ? 1.0 : 0.0)"
+            " - (not na(ls_prior_hi) and high > ls_prior_hi"
+            " and close < ls_prior_hi ? 1.0 : 0.0)",
+        ]
+    if "htf_trend" in features:
+        lines += [
+            "// features/__init__.py::htf_trend is sign(ema(48) - ema(240)) where ema() is",
+            "// ewm(span, adjust=False) seeded on the FIRST close. ta.ema seeds on an SMA,",
+            "// and at span 240 the two disagree for thousands of M5 bars, so both legs are",
+            "// re-derived here. np.sign(nan) is nan, hence the bar_index guard.",
+            "var float htf_ema_48 = na",
+            "htf_ema_48 := na(htf_ema_48[1]) ? close"
+            " : htf_ema_48[1] + (close - htf_ema_48[1]) * (2.0 / 49.0)",
+            "var float htf_ema_240 = na",
+            "htf_ema_240 := na(htf_ema_240[1]) ? close"
+            " : htf_ema_240[1] + (close - htf_ema_240[1]) * (2.0 / 241.0)",
+            "htf_trend = bar_index >= 239 ? math.sign(htf_ema_48 - htf_ema_240) : na",
         ]
     if "opening_range" in features:
         start, end = SESSIONS["ny"]

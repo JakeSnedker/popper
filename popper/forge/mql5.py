@@ -13,6 +13,8 @@ _SUPPORTED = {
     # step-4: the plain price / session / momentum features
     "bb_line", "body_pressure", "candle_size", "opening_range", "psar",
     "rsi_fast", "session_asia", "session_london",
+    # step-5: window features (no structural pivots)
+    "fvg", "htf_trend", "liquidity_sweep",
 }
 # Every level-feature renders as a series (tests/test_forge_levels.py proves each
 # one numerically against popper.dsl.features.levels.compute_level on real bars).
@@ -192,6 +194,56 @@ double Psar(const int shift)
    return out;
 }
 ''',
+    "Fvg": '''
+// Fair Value Gap presence: +1 on a bullish 3-bar gap (the high two bars back is
+// below this bar's low), -1 on the mirror. features/__init__.py compares against
+// NaN during warm-up, which is False, so the first two bars are 0.0, not unformed.
+double Fvg(const int shift)
+{
+   if(Bars(_Symbol, _Period) < shift + 3) return 0.0;
+   double value = 0.0;
+   if(iHigh(_Symbol, _Period, shift + 2) < iLow(_Symbol, _Period, shift)) value += 1.0;
+   if(iLow(_Symbol, _Period, shift + 2) > iHigh(_Symbol, _Period, shift)) value -= 1.0;
+   return value;
+}
+''',
+    "LiquiditySweep": '''
+// +1 when the low pierces the PRIOR 20-bar low and the close reclaims it, -1 on
+// the mirror. The baseline window is rolling(20).min().shift(1), so it starts at
+// shift + 1: this bar is never part of the level it has to pierce.
+double LiquiditySweep(const int shift)
+{
+   if(Bars(_Symbol, _Period) < shift + 21) return 0.0;
+   double prior_lo = iLow(_Symbol, _Period, shift + 1);
+   double prior_hi = iHigh(_Symbol, _Period, shift + 1);
+   for(int i = shift + 2; i <= shift + 20; i++)
+   {
+      prior_lo = MathMin(prior_lo, iLow(_Symbol, _Period, i));
+      prior_hi = MathMax(prior_hi, iHigh(_Symbol, _Period, i));
+   }
+   double bar_hi = iHigh(_Symbol, _Period, shift), bar_lo = iLow(_Symbol, _Period, shift);
+   double bar_close = iClose(_Symbol, _Period, shift);
+   double value = 0.0;
+   if(bar_lo < prior_lo && bar_close > prior_lo) value += 1.0;
+   if(bar_hi > prior_hi && bar_close < prior_hi) value -= 1.0;
+   return value;
+}
+''',
+    "PopEma": '''
+// ema() in features/__init__.py is ewm(span, adjust=False, min_periods=span): the
+// recursion is seeded on the FIRST close, where iMA/MODE_EMA seeds on an SMA. At
+// span 240 the two disagree for thousands of M5 bars, so the walk is replayed.
+double PopEma(const int shift, const int period)
+{
+   int last = (int)MathMin(Bars(_Symbol, _Period) - 1, shift + InpWarmupBars);
+   if(last - shift + 1 < period) return EMPTY_VALUE;
+   double alpha = 2.0 / (period + 1.0);
+   double value = iClose(_Symbol, _Period, last);
+   for(int i = last - 1; i >= shift; i--)
+      value += (iClose(_Symbol, _Period, i) - value) * alpha;
+   return value;
+}
+''',
     "OpeningRange": '''
 // High-low range of the first %(bars)d NY-session bars of the bar's OWN UTC day,
 // published only once all of them have printed (pos >= %(last)d in
@@ -231,7 +283,7 @@ double OpeningRange(const int shift)
 
 # helpers that re-walk history and so need InpWarmupBars, and helpers that scan
 # back over calendar days and so need InpLevelScanBars
-_WARMUP_HELPERS = {"RsiFast", "Psar"}
+_WARMUP_HELPERS = {"RsiFast", "Psar", "PopEma"}
 _SCAN_HELPERS = {"OpeningRange"}
 
 _HELPERS = {**_LEVEL_HELPERS, **_FEATURE_HELPERS}
@@ -240,7 +292,8 @@ _HELPERS = {**_LEVEL_HELPERS, **_FEATURE_HELPERS}
 def _feature_helpers(features: set[str]) -> set[str]:
     """The helper functions the emitted feature lines call."""
     wanted = {"bb_line": "LevelBb", "rsi_fast": "RsiFast", "psar": "Psar",
-              "opening_range": "OpeningRange"}
+              "opening_range": "OpeningRange", "fvg": "Fvg",
+              "liquidity_sweep": "LiquiditySweep", "htf_trend": "PopEma"}
     return {helper for name, helper in wanted.items() if name in features}
 
 
@@ -436,6 +489,17 @@ def generate_mql5(spec: StrategySpec) -> str:
         feature_lines.append("   double psar = Psar(1);")
     if "opening_range" in features:
         feature_lines.append("   double opening_range = OpeningRange(1);")
+    if "fvg" in features:
+        feature_lines.append("   double fvg = Fvg(1);")
+    if "liquidity_sweep" in features:
+        feature_lines.append("   double liquidity_sweep = LiquiditySweep(1);")
+    if "htf_trend" in features:
+        feature_lines += [
+            "   double htf_ema_fast = PopEma(1, 48);",
+            "   double htf_ema_slow = PopEma(1, 240);",
+            "   double htf_trend = (htf_ema_fast == EMPTY_VALUE || htf_ema_slow == EMPTY_VALUE)",
+            "      ? EMPTY_VALUE : Sign(htf_ema_fast - htf_ema_slow);",
+        ]
 
     long_signal = compile_expression(spec.alpha.signal, "mql5")
     short_signal = compile_expression(spec.alpha.signal_short, "mql5") if spec.alpha.signal_short else "false"

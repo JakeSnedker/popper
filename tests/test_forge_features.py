@@ -86,6 +86,45 @@ def mirror_candle_size(bars):
     return [h - l for h, l in zip(bars["high"], bars["low"])]
 
 
+def mirror_fvg(bars):
+    """Pine `(not na(high[2]) and high[2] < low ? 1 : 0) - (not na(low[2]) and
+    low[2] > high ? 1 : 0)`, and the identical MQL5 `Fvg(shift)` under its
+    `Bars < shift + 3` guard. Warm-up is 0.0, not na: the Python compares
+    against NaN, which is False."""
+    high, low = list(bars["high"]), list(bars["low"])
+    out = []
+    for i in range(len(bars)):
+        if i < 2:
+            out.append(0.0)
+            continue
+        value = 0.0
+        if high[i - 2] < low[i]:
+            value += 1.0
+        if low[i - 2] > high[i]:
+            value -= 1.0
+        out.append(value)
+    return out
+
+
+def mirror_liquidity_sweep(bars):
+    """Pine `ta.lowest(low, 20)[1]` / `ta.highest(high, 20)[1]` and the MQL5 loop
+    over shift+1..shift+20 -- the same shifted window in both."""
+    high, low, close = list(bars["high"]), list(bars["low"]), list(bars["close"])
+    out = []
+    for i in range(len(bars)):
+        if i < 20:
+            out.append(0.0)
+            continue
+        prior_lo, prior_hi = min(low[i - 20:i]), max(high[i - 20:i])
+        value = 0.0
+        if low[i] < prior_lo and close[i] > prior_lo:
+            value += 1.0
+        if high[i] > prior_hi and close[i] < prior_hi:
+            value -= 1.0
+        out.append(value)
+    return out
+
+
 def mirror_body_pressure(bars):
     """`(high - low) == 0 ? na : (close - open) / (high - low)`."""
     return [NAN if h - l == 0 else (c - o) / (h - l)
@@ -172,6 +211,20 @@ def pine_opening_range(bars):
     return out
 
 
+def pine_htf_trend(bars):
+    """`htf_ema_48 := na(htf_ema_48[1]) ? close : htf_ema_48[1] + (close -
+    htf_ema_48[1]) * (2/49)`, the span-240 twin, and
+    `bar_index >= 239 ? math.sign(fast - slow) : na`."""
+    close = list(bars["close"])
+    fast = slow = NAN
+    out = []
+    for i in range(len(bars)):
+        fast = close[i] if np.isnan(fast) else fast + (close[i] - fast) * (2.0 / 49.0)
+        slow = close[i] if np.isnan(slow) else slow + (close[i] - slow) * (2.0 / 241.0)
+        out.append(np.sign(fast - slow) if i >= 239 else NAN)
+    return out
+
+
 # --- mirrors of the emitted MQL5 ---------------------------------------------
 
 def mql5_bb_line(bars):
@@ -237,6 +290,28 @@ def mql5_psar(bars, warmup=WARMUP):
     return out
 
 
+def mql5_htf_trend(bars, warmup=WARMUP):
+    """`PopEma(shift, 48)` and `PopEma(shift, 240)`, then the EMPTY_VALUE guard
+    and `Sign(fast - slow)` from the emitted feature lines."""
+    close = list(bars["close"])
+
+    def pop_ema(i, period):
+        last = min(i, warmup)                    # MathMin(Bars - 1, shift + warmup)
+        if last + 1 < period:                    # last - shift + 1 < period
+            return NAN
+        alpha = 2.0 / (period + 1.0)
+        value = close[i - last]
+        for k in range(last - 1, -1, -1):
+            value += (close[i - k] - value) * alpha
+        return value
+
+    out = []
+    for i in range(len(bars)):
+        fast, slow = pop_ema(i, 48), pop_ema(i, 240)
+        out.append(NAN if np.isnan(fast) or np.isnan(slow) else np.sign(fast - slow))
+    return out
+
+
 def mql5_opening_range(bars, scan=5000):
     """`OpeningRange(shift)`: walk back to the oldest bar of the same UTC day,
     then forward, counting NY bars."""
@@ -286,6 +361,25 @@ def test_candle_size_matches_compute_feature(target):
 @pytest.mark.parametrize("target", ["pine", "mql5"])
 def test_body_pressure_matches_compute_feature(target):
     assert_parity("body_pressure", mirror_body_pressure(BARS), BARS, target)
+
+
+@pytest.mark.parametrize("target", ["pine", "mql5"])
+def test_fvg_matches_compute_feature(target):
+    assert_parity("fvg", mirror_fvg(BARS), BARS, target, min_finite=0.99)
+
+
+@pytest.mark.parametrize("target", ["pine", "mql5"])
+def test_liquidity_sweep_matches_compute_feature(target):
+    assert_parity("liquidity_sweep", mirror_liquidity_sweep(BARS), BARS, target,
+                  min_finite=0.99)
+
+
+def test_pine_htf_trend_matches_compute_feature():
+    assert_parity("htf_trend", pine_htf_trend(BARS), BARS, "pine")
+
+
+def test_mql5_htf_trend_matches_compute_feature():
+    assert_parity("htf_trend", mql5_htf_trend(WALK), WALK, "mql5", min_finite=0.2)
 
 
 def test_pine_bb_line_matches_compute_feature():
@@ -384,6 +478,9 @@ NEW_FEATURES = {
     "rsi_fast": "rsi_fast > 60",
     "session_asia": "session_asia == 1",
     "session_london": "session_london == 1",
+    "fvg": "fvg > 0",
+    "htf_trend": "htf_trend > 0",
+    "liquidity_sweep": "liquidity_sweep > 0",
 }
 
 
