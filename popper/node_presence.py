@@ -93,7 +93,14 @@ def publish(state: dict[str, Any], force: bool = False) -> str | None:
     return None
 
 
-def fleet(stale_after_seconds: int = 300) -> list[dict[str, Any]]:
+# A running node heartbeats every 5 seconds, so 300s tolerated SIXTY missed
+# beats and a machine dead for four minutes still read as online. 60s is twelve
+# missed beats -- long enough to ride out a slow publish, short enough that
+# "online" means something.
+STALE_AFTER_SECONDS = 60
+
+
+def fleet(stale_after_seconds: int = STALE_AFTER_SECONDS) -> list[dict[str, Any]]:
     """Every node this operator is allowed to see, newest heartbeat first."""
     if not enabled():
         return []

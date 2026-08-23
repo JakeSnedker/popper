@@ -243,7 +243,21 @@ export function NodeFleet() {
                 </div>
               )}
             </div>
-            <span className="pill bg-ink-700 text-slate-300 shrink-0">{node.status}</span>
+            {/* A stale row still carries its last published status, so an offline
+                node would keep claiming "researching" forever. Show the status
+                only while it is still being refreshed. */}
+            <span
+              className={`pill shrink-0 ${
+                node.online ? "bg-ink-700 text-slate-300" : "bg-ink-800 text-slate-500 italic"
+              }`}
+              title={
+                node.online
+                  ? `Worker status: ${node.status}`
+                  : `No heartbeat. Last reported "${node.status}" before it stopped.`
+              }
+            >
+              {node.online ? node.status : "no signal"}
+            </span>
             <Toggle
               node={node}
               field="switch"
@@ -264,7 +278,12 @@ export function NodeFleet() {
             />
             <ProviderToggles node={node} onDone={reload} />
             <RequeueButton node={node} onDone={reload} />
-            <span className="text-[10px] text-slate-500 shrink-0 w-16 text-right">
+            <span
+              className={`text-[10px] shrink-0 w-16 text-right ${
+                node.online ? "text-slate-500" : "text-amber-400 font-semibold"
+              }`}
+              title="Time since this node last reported"
+            >
               {age(node.seconds_since_heartbeat)}
             </span>
           </div>
