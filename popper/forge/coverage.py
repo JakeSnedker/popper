@@ -40,8 +40,10 @@ _CAPABILITIES: dict[str, dict[str, bool]] = {
         # the three levels whose value on bar i reads bar i's own OHLC: the
         # compiler shifts them one bar (INTRA_BAR_LEVELS) and so does the emitter
         "level exit anchored to prior_fractal_hi/lo or bb_line": True,
-        # 1R is only known at the fill; a broker needs the volume at placement
-        "level exit with a resting entry": False,
+        # compiler.py's try_open takes an anchor_i: a resting order resolves its
+        # level stop/target from the PLACEMENT bar, so 1R is settled when the
+        # order is sent -- which is when a broker fixes its volume
+        "level exit with a resting entry": True,
         "trail.atr": True,
         "break_even.after_r": True,
         "time_stop.bars": True,
@@ -64,8 +66,10 @@ _CAPABILITIES: dict[str, dict[str, bool]] = {
         # the three levels whose value on bar i reads bar i's own OHLC: the
         # compiler shifts them one bar (INTRA_BAR_LEVELS) and so does the emitter
         "level exit anchored to prior_fractal_hi/lo or bb_line": True,
-        # 1R is only known at the fill; a broker needs the volume at placement
-        "level exit with a resting entry": False,
+        # compiler.py's try_open takes an anchor_i: a resting order resolves its
+        # level stop/target from the PLACEMENT bar, so 1R is settled when the
+        # order is sent -- which is when a broker fixes its volume
+        "level exit with a resting entry": True,
         "trail.atr": True,
         "break_even.after_r": True,
         "time_stop.bars": True,

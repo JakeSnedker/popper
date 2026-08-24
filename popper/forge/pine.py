@@ -123,22 +123,34 @@ def _validate(spec: StrategySpec) -> None:
 
 
 def _reject_unsupported(spec) -> None:
-    """Refuse to emit code that would trade differently from the backtest.
+    """Refuse to emit code that would trade differently from the backtest."""
+    _spec_levels(spec)  # raises on any anchor this target cannot render
 
-    A level exit combined with a RESTING entry is the one combination left out:
-    the compiler measures 1R from the fill bar's level, and a broker needs the
-    order volume when the order is placed, bars before that level is known.
-    Sizing off the placement-bar level instead would deploy a position size
-    nobody backtested.
+
+def _placement_latch(spec: StrategySpec) -> list[tuple[str, str]]:
+    """(var, expression) pairs a RESTING order latches on the bar it is PLACED.
+
+    popper/dsl/compiler.py resolves a level stop/target from `rest_anchor_i` --
+    the bar the order was placed on, not the bar it filled (`try_open`'s
+    `anchor_i`). A broker fixes order volume when the order is sent, so 1R has to
+    be settled there; a level re-read at the fill would be a different number and
+    so a different position size from the one that was backtested.
+
+    The expressions are the same ones an immediate entry uses, evaluated on the
+    signal bar -- so an INTRA_BAR_LEVEL exit anchor is still read one bar back
+    (`_exit_series`) while an ENTRY anchor on that same bar is not.
     """
     w = spec.wrapper
-    level_exit = w.stop.type == "level" or w.target.type == "level"
-    if level_exit and w.entry.type != "market":
-        raise PineUnsupported(
-            f"Pine target cannot combine a level exit with a {w.entry.type} entry: "
-            "the risk distance is only known at the fill, after the order is placed"
-        )
-    _spec_levels(spec)  # raises on any anchor this target cannot render
+    if w.entry.type == "market":
+        return []
+    latch = []
+    if w.stop.type == "level":
+        anchor = _exit_series(_exit_anchor(spec, w.stop, "wrapper.stop"))
+        latch.append(("signal_stop_lvl", f"{anchor} + ({_wrapper_value(w.stop.offset)})"))
+    if w.target.type == "level":
+        anchor = _exit_series(_exit_anchor(spec, w.target, "wrapper.target"))
+        latch.append(("signal_target_lvl", f"{anchor} + ({_wrapper_value(w.target.offset)})"))
+    return latch
 
 
 def _plain_feature_lines(features: set[str]) -> list[str]:
@@ -537,7 +549,8 @@ def _level_lines(names: set[str], defined: set[str] = frozenset()) -> list[str]:
     return lines
 
 
-def _resting_entry_lines(entry, anchor: str | None = None) -> list[str]:
+def _resting_entry_lines(entry, anchor: str | None = None,
+                         placement: list[tuple[str, str]] = ()) -> list[str]:
     """A limit/stop order priced off the SIGNAL bar and live from the next one.
 
     Mirrors the compiler: a limit rests at a BETTER price than the signal close
@@ -548,6 +561,11 @@ def _resting_entry_lines(entry, anchor: str | None = None) -> list[str]:
     instead. The compiler reads `entry_lvl[i]` there and applies NO offset, so
     neither does this -- and a signal whose anchor has not formed is dropped,
     exactly as `rest_dir` stays 0 for a NaN anchor.
+
+    `placement` latches a level exit's stop/target on this same bar, because that
+    is where the compiler measures them from once an order rests (see
+    `_placement_latch`). The var holds while the order rests: nothing can
+    overwrite it, since no new order is armed while `rest_dir != 0`.
     """
     offset = _wrapper_value(entry.offset)
     expiry = int(entry.expiry_bars)
@@ -560,8 +578,10 @@ def _resting_entry_lines(entry, anchor: str | None = None) -> list[str]:
         armed = "not na(atr_14)"
         long_price = f"close {long_sign} {offset} * atr_14"
         short_price = f"close {short_sign} {offset} * atr_14"
+    latch = [f"    {var} := {expr}" for var, expr in placement]
     return [
         "var float signal_atr = na",
+    ] + [f"var float {var} = na" for var, _ in placement] + [
         "var int rest_dir = 0",
         "var int rest_bars = 0",
         "var int filled_trades = 0",
@@ -584,11 +604,13 @@ def _resting_entry_lines(entry, anchor: str | None = None) -> list[str]:
         "can_enter = strategy.position_size == 0 and rest_dir == 0 and (max_trades_per_day == 0 or entries_today < max_trades_per_day)",
         f"if can_enter and long_signal and {armed}",
         "    signal_atr := atr_14",
+    ] + latch + [
         "    rest_dir := 1",
         "    rest_bars := 0",
         f'    strategy.entry("Long", strategy.long, {keyword}={long_price})',
         f"else if can_enter and short_signal and {armed}",
         "    signal_atr := atr_14",
+    ] + latch + [
         "    rest_dir := -1",
         "    rest_bars := 0",
         f'    strategy.entry("Short", strategy.short, {keyword}={short_price})',
@@ -673,13 +695,22 @@ def _managed_exit_lines(spec: StrategySpec) -> list[str]:
 def _level_exit_lines(spec: StrategySpec) -> list[str]:
     """Freeze the stop/target on the bar the position OPENED, from that bar's levels.
 
-    That is where popper/dsl/compiler.py resolves them (`try_open` reads
-    stop_lvl[i]/tgt_lvl[i] at the fill bar and never moves them afterwards).
-    `_exit_series` supplies the same series the compiler's `exit_anchor` builds,
-    so the value is final even during Pine's on-fill intrabar recalculation.
+    That is where popper/dsl/compiler.py resolves them for a MARKET entry
+    (`try_open` reads stop_lvl[i]/tgt_lvl[i] at the fill bar and never moves them
+    afterwards). `_exit_series` supplies the same series the compiler's
+    `exit_anchor` builds, so the value is final even during Pine's on-fill
+    intrabar recalculation.
+
+    A RESTING order settles its risk one step earlier: `try_open` takes an
+    `anchor_i` of the PLACEMENT bar, so the level was latched there
+    (`_placement_latch`) and is only read back here. Recomputing the anchor on
+    this bar instead is the exact mismatch that change removed.
     """
     w = spec.wrapper
-    if w.stop.type == "level":
+    resting = w.entry.type != "market"
+    if w.stop.type == "level" and resting:
+        stop_expr = "signal_stop_lvl"
+    elif w.stop.type == "level":
         anchor = _exit_series(_exit_anchor(spec, w.stop, "wrapper.stop"))
         stop_expr = f"{anchor} + ({_wrapper_value(w.stop.offset)})"
     else:
@@ -687,7 +718,9 @@ def _level_exit_lines(spec: StrategySpec) -> list[str]:
             "entry_price - dir_sign * nz(signal_atr, atr_14) * "
             f"{_wrapper_value(w.stop.mult)}"
         )
-    if w.target.type == "level":
+    if w.target.type == "level" and resting:
+        target_expr = "signal_target_lvl"
+    elif w.target.type == "level":
         anchor = _exit_series(_exit_anchor(spec, w.target, "wrapper.target"))
         target_expr = f"{anchor} + ({_wrapper_value(w.target.offset)})"
     else:
@@ -840,7 +873,8 @@ def generate_pine(spec: StrategySpec) -> str:
         ]
     else:
         lines += _resting_entry_lines(
-            entry, _entry_anchor(spec, entry.anchor) if entry.anchor else None
+            entry, _entry_anchor(spec, entry.anchor) if entry.anchor else None,
+            _placement_latch(spec),
         )
     if spec.wrapper.stop.type == "level" or spec.wrapper.target.type == "level":
         lines += _level_exit_lines(spec)

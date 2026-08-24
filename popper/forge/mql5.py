@@ -510,18 +510,24 @@ def _exit_anchor(spec: StrategySpec, rule, path: str) -> str:
     return name
 
 
-def _exit_call(name: str) -> str:
-    """The level call an EXIT prices from, evaluated on the bar the trade opens.
+def _exit_call(name: str, resting: bool = False) -> str:
+    """The level call an EXIT prices from, at the bar the compiler anchors to.
 
-    Shift 0 is that bar. Most levels are functions of bars <= i-1, so shift 0 is
-    already final. bb_line and the two fractals read bar i's own OHLC, and
-    popper/dsl/compiler.py's `exit_anchor` shifts exactly those three
-    (INTRA_BAR_LEVELS) one bar back before resolving an exit -- so the EA reads
-    shift 1, the last fully-closed bar, which is the price the backtest used.
+    For a MARKET entry that bar is the one the trade opens on -- shift 0. For a
+    RESTING order it is the bar the order was PLACED on, which is the signal bar,
+    shift 1: `try_open`'s `anchor_i` is `rest_anchor_i`, so 1R is settled when
+    the order is sent and not wherever the level has drifted to by the fill.
 
-    ENTRY anchors stay at shift 1 (the signal bar) and are never shifted again.
+    Both are then shifted one further bar for bb_line and the two fractals, which
+    read their own bar's OHLC: popper/dsl/compiler.py's `exit_anchor` shifts
+    exactly those three (INTRA_BAR_LEVELS) before resolving an exit.
+
+    ENTRY anchors stay at shift 1 (the signal bar) and are never shifted again --
+    so a spec anchoring both to the same intra-bar level reads two different
+    bars, which is the point.
     """
-    return _level_call(name, "1" if name in INTRA_BAR_LEVELS else "0")
+    shift = (1 if resting else 0) + (1 if name in INTRA_BAR_LEVELS else 0)
+    return _level_call(name, str(shift))
 
 
 def _entry_anchor(spec: StrategySpec, name: str) -> str:
@@ -583,21 +589,7 @@ def _validate(spec: StrategySpec) -> None:
 
 
 def _reject_unsupported(spec) -> None:
-    """Refuse to emit code that would trade differently from the backtest.
-
-    A level exit combined with a RESTING entry is the one combination left out:
-    the compiler measures 1R from the fill bar's level, and RiskLots needs that
-    distance when the pending order is SENT, bars before the level is known.
-    Sizing off the placement-bar level would deploy a position size nobody
-    backtested.
-    """
-    w = spec.wrapper
-    level_exit = w.stop.type == "level" or w.target.type == "level"
-    if level_exit and w.entry.type != "market":
-        raise Mql5Unsupported(
-            f"MQL5 target cannot combine a level exit with a {w.entry.type} entry: "
-            "the risk distance is only known at the fill, after the order is sent"
-        )
+    """Refuse to emit code that would trade differently from the backtest."""
     _spec_levels(spec)  # raises on any anchor this target cannot render
 
 
@@ -739,8 +731,32 @@ def generate_mql5(spec: StrategySpec) -> str:
         f"{name} == EMPTY_VALUE || !MathIsValidNumber({name})" for name in guard_names
     )
 
-    entry = spec.wrapper.entry
+    w = spec.wrapper
+    entry = w.entry
     resting = entry.type != "market"
+    level_exit = w.stop.type == "level" or w.target.type == "level"
+    # A level stop/target is an ABSOLUTE price. A resting order anchors it to the
+    # placement bar (`_exit_call(..., resting=True)`), so the same value serves
+    # the order that is sent and the position it becomes; `held` replays the
+    # stored one at the fill instead of re-reading the level on the fill bar.
+    stop_level = target_level = None
+    if w.stop.type == "level":
+        stop_level = (f"{_exit_call(_exit_anchor(spec, w.stop, 'wrapper.stop'), resting)}"
+                      f" + ({_wrapper_value(w.stop.offset)})")
+    if w.target.type == "level":
+        target_level = (f"{_exit_call(_exit_anchor(spec, w.target, 'wrapper.target'), resting)}"
+                        f" + ({_wrapper_value(w.target.offset)})")
+
+    def stop_at(price: str, held: str | None = None) -> str:
+        if w.stop.type != "level":
+            return f"{price} + (is_long ? -1.0 : 1.0) * atr * {stop_mult}"
+        return held or stop_level
+
+    def target_at(price: str, held: str | None = None) -> str:
+        if w.target.type != "level":
+            return f"{price} + (is_long ? 1.0 : -1.0) * stop_distance * {rr}"
+        return held or target_level
+
     tighten = spec.wrapper.trail.type == "atr" or spec.wrapper.break_even.type == "after_r"
     tighten_globals = tighten_helper = ""
     if tighten:
@@ -828,7 +844,56 @@ void TightenStop()
             "\ndouble pending_atr = 0.0;"
             "\ndatetime managed_entry = 0;"
         )
-        pending_helpers = f'''
+        if level_exit:
+            pending_globals += "\ndouble pending_stop = 0.0;\ndouble pending_target = 0.0;"
+            reprice = f'''
+// A gap can fill a resting order better (limit) or worse (stop) than its price, and
+// the backtest measures 1R from the FILL, so re-anchor once the fill is known. A
+// LEVEL stop/target is not re-read here: compiler.py resolves it from the PLACEMENT
+// bar (try_open's anchor_i), which is the bar the order -- and so its volume -- was
+// committed on. Recomputing the level now would price the trade from a bar the
+// order was never sent with.
+void RepriceStops(const double atr)
+{{
+   // ponytail: restarting the EA mid-order loses the placement levels. Leaving the
+   // broker's own stops alone is the safe fallback -- they were set from those very
+   // values when the order went in.
+   if(atr <= 0.0 || pending_stop == 0.0 || pending_target == 0.0) return;
+   double fill = PositionGetDouble(POSITION_PRICE_OPEN);
+   bool is_long = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY;
+   double stop = {stop_at("fill", "pending_stop")};
+   double stop_distance = MathAbs(fill - stop);
+   double target = {target_at("fill", "pending_target")};
+   // GUARD, same as try_open: a stop or target on the wrong side of the FILL is an
+   // incoherent trade the backtest never opened. The fill already happened, so
+   // flatten at once rather than hold a position the hypothesis never took.
+   if(!MathIsValidNumber(stop) || !MathIsValidNumber(target)
+      || (is_long ? !(stop < fill && target > fill) : !(stop > fill && target < fill)))
+   {{
+      trade.PositionClose(_Symbol);
+      return;
+   }}
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   trade.PositionModify(_Symbol, NormalizeDouble(stop, digits), NormalizeDouble(target, digits));
+}}
+'''
+            sizing = f'''   // 1R off the PLACEMENT bar, which is where compiler.py's anchor_i reads it and
+   // the only timing a broker can size an order from
+   double stop = {stop_at("price")};
+   if(stop == EMPTY_VALUE || !MathIsValidNumber(stop)) return false;
+   double stop_distance = MathAbs(price - stop);
+   double target = {target_at("price")};
+   if(target == EMPTY_VALUE || !MathIsValidNumber(target)) return false;
+   if(is_long ? !(stop < price && target > price) : !(stop > price && target < price))
+      return false;
+   double lots = RiskLots(stop_distance);
+   if(lots <= 0.0) return false;
+   pending_stop = stop;
+   pending_target = target;
+   stop = NormalizeDouble(stop, digits);
+   target = NormalizeDouble(target, digits);'''
+        else:
+            reprice = f'''
 // A gap can fill a resting order better (limit) or worse (stop) than its price.
 // The backtest measures the stop from the FILL, so re-anchor once the fill is known.
 void RepriceStops(const double atr)
@@ -843,7 +908,14 @@ void RepriceStops(const double atr)
       NormalizeDouble(fill + (is_long ? -stop_distance : stop_distance), digits),
       NormalizeDouble(fill + (is_long ? reward_distance : -reward_distance), digits));
 }}
-
+'''
+            sizing = f'''   double stop_distance = atr * {stop_mult};
+   double reward_distance = stop_distance * {rr};
+   double lots = RiskLots(stop_distance);
+   if(lots <= 0.0) return false;
+   double stop = NormalizeDouble(price + (is_long ? -stop_distance : stop_distance), digits);
+   double target = NormalizeDouble(price + (is_long ? reward_distance : -reward_distance), digits);'''
+        pending_helpers = f'''{reprice}
 bool PlacePending(const bool is_long, const double atr, const double signal_close)
 {{
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
@@ -857,12 +929,7 @@ bool PlacePending(const bool is_long, const double atr, const double signal_clos
       pending_atr = atr;
       return true;
    }}
-   double stop_distance = atr * {stop_mult};
-   double reward_distance = stop_distance * {rr};
-   double lots = RiskLots(stop_distance);
-   if(lots <= 0.0) return false;
-   double stop = NormalizeDouble(price + (is_long ? -stop_distance : stop_distance), digits);
-   double target = NormalizeDouble(price + (is_long ? reward_distance : -reward_distance), digits);
+{sizing}
    ENUM_ORDER_TYPE_TIME time_type = ORDER_TIME_GTC;
    datetime expiration = 0;
    // broker-side backstop for when the EA is not running; the bar count in OnTick
@@ -918,28 +985,27 @@ bool PlacePending(const bool is_long, const double atr, const double signal_clos
             "   }",
         ]
 
-    w = spec.wrapper
-    if w.stop.type == "level" or w.target.type == "level":
-        stop_expr = (
-            f"{_exit_call(_exit_anchor(spec, w.stop, 'wrapper.stop'))}"
-            f" + ({_wrapper_value(w.stop.offset)})" if w.stop.type == "level"
-            else f"price + (is_long ? -1.0 : 1.0) * atr * {stop_mult}"
-        )
-        target_expr = (
-            f"{_exit_call(_exit_anchor(spec, w.target, 'wrapper.target'))}"
-            f" + ({_wrapper_value(w.target.offset)})" if w.target.type == "level"
-            else f"price + (is_long ? 1.0 : -1.0) * stop_distance * {rr}"
+    if level_exit:
+        # when the entry rests, this function is only reachable from PlacePending's
+        # already-through-the-price branch, on the tick that placed the order -- so
+        # shift 1 is still the anchor bar there
+        anchor_bar = (
+            "   // resolved on the PLACEMENT bar -- shift 1, the bar whose close fired\n"
+            "   // the signal -- which is where compiler.py's try_open reads\n"
+            "   // stop_lvl[anchor_i] once an order rests."
+            if resting else
+            "   // resolved on the bar the trade OPENS on -- shift 0, the bar whose first tick\n"
+            "   // fired this call -- exactly where compiler.py's try_open reads stop_lvl[i]."
         )
         open_position = f'''bool OpenPosition(const bool is_long, const double atr)
 {{
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double price = SymbolInfoDouble(_Symbol, is_long ? SYMBOL_ASK : SYMBOL_BID);
-   // resolved on the bar the trade OPENS on -- shift 0, the bar whose first tick
-   // fired this call -- exactly where compiler.py's try_open reads stop_lvl[i].
-   double stop = {stop_expr};
+{anchor_bar}
+   double stop = {stop_at("price")};
    if(stop == EMPTY_VALUE || !MathIsValidNumber(stop)) return false;
    double stop_distance = MathAbs(price - stop);
-   double target = {target_expr};
+   double target = {target_at("price")};
    if(target == EMPTY_VALUE || !MathIsValidNumber(target)) return false;
    // GUARD, same as try_open: an unformed anchor or a level on the wrong side of
    // entry is an incoherent trade. The backtest never opened it, so neither do we.

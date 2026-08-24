@@ -216,14 +216,16 @@ def test_an_anchored_resting_order_now_rests_at_the_level(kind):
 
 
 @pytest.mark.parametrize("kind", ["limit", "stop"])
-def test_a_level_exit_with_a_resting_order_still_fails_closed(kind):
-    """The compiler measures 1R from the FILL bar's level. A broker needs the
-    volume when the order is sent, bars earlier -- sizing off the placement bar
-    would deploy a position size nobody backtested."""
+def test_a_level_exit_with_a_resting_order_now_renders(kind):
+    """The compiler settles 1R at PLACEMENT (try_open's anchor_i, d4d5f97), which
+    is when a broker fixes the order volume -- so the pairing is deployable. The
+    emitted stop must come from the value latched with the order, never a fresh
+    read at the fill; tests/test_forge_resting_level_exits.py pins that timing
+    against the backtest bar for bar."""
     sp = spec(stop={"type": "level", "anchor": "prior_swing_wick_lo"},
               entry={"type": kind, "offset": 0.5, "expiry_bars": 5})
-    for generate in (generate_pine, generate_mql5):
-        with pytest.raises(ValueError, match="only known at the fill"):
-            generate(sp)
-    with pytest.raises(ForgeUnsupported, match="only known at the fill"):
-        forge_spec(sp)
+    pine, mql = generate_pine(sp), generate_mql5(sp)
+    assert "    signal_stop_lvl := prior_swing_wick_lo + (0)" in pine
+    assert "float new_stop = signal_stop_lvl" in pine
+    assert "double stop = pending_stop;" in mql
+    assert forge_spec(sp).files

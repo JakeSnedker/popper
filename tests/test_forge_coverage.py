@@ -12,10 +12,11 @@ from popper.dsl.features import FEATURES
 from popper.dsl.features.levels import LEVEL_FEATURES
 from popper.forge.coverage import TARGETS, coverage, coverage_for, report
 
-# measured 2026-08-23, at DSL v0.4 (level-feature vocabulary landed in both targets)
+# measured 2026-08-24, at DSL v0.4 (a level exit now renders with a resting entry,
+# anchored to the placement bar -- tests/test_forge_resting_level_exits.py)
 BASELINE = {
-    "pine": {"features": 26, "levels": 13, "capabilities": 12},
-    "mql5": {"features": 26, "levels": 13, "capabilities": 13},
+    "pine": {"features": 26, "levels": 13, "capabilities": 13},
+    "mql5": {"features": 26, "levels": 13, "capabilities": 14},
 }
 
 

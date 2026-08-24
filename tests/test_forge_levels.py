@@ -377,14 +377,16 @@ def test_a_settled_level_exit_is_never_shifted(name):
     assert _level_call(name, "0") in mql and _level_call(name, "1") not in mql
 
 
-def test_a_level_exit_with_a_resting_entry_fails_closed():
-    """1R is measured from the fill bar's level; a broker needs the volume when
-    the order is SENT. Sizing off the placement bar would ship an untested size."""
+def test_a_level_exit_with_a_resting_entry_reads_the_placement_bar():
+    """d4d5f97 moved a resting order's 1R to the PLACEMENT bar (try_open's
+    anchor_i), which is when a broker fixes the volume -- so the pairing renders.
+    tests/test_forge_resting_level_exits.py proves the timing numerically; here
+    it is only the emitted stop pointing at the latched value, not a fresh read."""
     sp = spec(stop={"type": "level", "anchor": "prior_swing_wick_lo"},
               entry={"type": "limit", "offset": 0.5, "expiry_bars": 5})
-    for generate in (generate_pine, generate_mql5):
-        with pytest.raises(ValueError, match="only known at the fill"):
-            generate(sp)
+    pine, mql = generate_pine(sp), generate_mql5(sp)
+    assert "float new_stop = signal_stop_lvl" in pine
+    assert "double stop = pending_stop;" in mql
 
 
 # --- what now renders --------------------------------------------------------
