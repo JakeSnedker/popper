@@ -354,6 +354,22 @@ def test_the_placement_level_is_held_across_the_bars_the_order_rests():
     assert "else return;   // still resting" in mql
 
 
+def test_an_unformed_placement_anchor_sends_no_order_and_takes_no_trade():
+    """The one deliberate divergence, named rather than hidden. MQL5 cannot size an
+    order without a stop distance, so an unformed anchor sends nothing; the backtest
+    rests an order and declines it at the fill. Neither takes a trade -- only the
+    signal-blocking differs, and only during a level's warm-up."""
+    mql = generate_mql5(spec(entry={"type": "limit", "offset": 0.5, "expiry_bars": 5},
+                             stop={"type": "level", "anchor": "session_ny_lo"}))
+    assert "if(stop == EMPTY_VALUE || !MathIsValidNumber(stop)) return false;" in mql
+    assert "ponytail: an UNFORMED anchor cannot size an order" in mql
+    # and the backtest really does decline it: a window too short to form the level
+    short = BARS.iloc[:12].reset_index(drop=True)
+    sp = spec(entry={"type": "limit", "offset": 0.5, "expiry_bars": 5},
+              stop={"type": "level", "anchor": "prior_swing_wick_lo"})
+    assert compile_to_backtest(sp)(short)["n_trades"] == 0
+
+
 def test_a_market_entry_keeps_reading_the_fill_bar():
     """The guard against fixing this in the wrong place. A market entry's anchor
     IS the fill bar (try_open passes no anchor_i), so nothing may latch."""

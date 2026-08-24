@@ -879,6 +879,11 @@ void RepriceStops(const double atr)
 '''
             sizing = f'''   // 1R off the PLACEMENT bar, which is where compiler.py's anchor_i reads it and
    // the only timing a broker can size an order from
+   // ponytail: an UNFORMED anchor cannot size an order, so none is sent. The backtest
+   // does rest one and only declines it at the fill, so it blocks the next signal for
+   // expiry_bars where this EA would take it. Neither takes a TRADE, and it only
+   // happens while a level is still warming up -- measured on US30 M5 2025-Q1 as the
+   // first day of the dataset and no other bar, so never once history precedes the EA.
    double stop = {stop_at("price")};
    if(stop == EMPTY_VALUE || !MathIsValidNumber(stop)) return false;
    double stop_distance = MathAbs(price - stop);
