@@ -465,14 +465,14 @@ def test_the_forge_bundle_carries_a_level_strategy():
 
 # --- the guards that must NOT have been widened ------------------------------
 
-def test_trail_break_even_and_no_trade_still_fail_closed():
-    for wrapper in ({"trail": {"type": "atr", "mult": 2.0}},
-                    {"break_even": {"type": "after_r", "trigger_r": 1.0}},
-                    {"constraints": {"no_trade": ["news"]}}):
-        sp = spec(stop={"type": "level", "anchor": "prior_swing_wick_lo"}, **wrapper)
-        for generate in (generate_pine, generate_mql5):
-            with pytest.raises(ValueError):
-                generate(sp)
+def test_no_trade_still_fails_closed():
+    """trail and break-even now render (tests/test_forge_wrappers.py). no_trade
+    does not, and must not: compiler.py never enforces it."""
+    sp = spec(stop={"type": "level", "anchor": "prior_swing_wick_lo"},
+              constraints={"no_trade": ["news"]})
+    for generate in (generate_pine, generate_mql5):
+        with pytest.raises(ValueError, match="does not enforce it"):
+            generate(sp)
 
 
 def test_an_unimplemented_alpha_feature_still_fails_closed(monkeypatch):

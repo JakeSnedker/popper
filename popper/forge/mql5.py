@@ -567,10 +567,19 @@ def _validate(spec: StrategySpec) -> None:
         raise Mql5Unsupported(f"MQL5 target does not implement stop type {spec.wrapper.stop.type!r}")
     if spec.wrapper.target.type not in ("ratio", "level"):
         raise Mql5Unsupported(f"MQL5 target does not implement target type {spec.wrapper.target.type!r}")
-    if spec.wrapper.trail.type != "none" or spec.wrapper.break_even.type != "none":
-        raise Mql5Unsupported("MQL5 target does not yet support trail or break-even wrappers")
+    if spec.wrapper.trail.type not in ("none", "atr"):
+        raise Mql5Unsupported(f"MQL5 target does not implement trail type {spec.wrapper.trail.type!r}")
+    if spec.wrapper.break_even.type not in ("none", "after_r"):
+        raise Mql5Unsupported(
+            f"MQL5 target does not implement break-even type {spec.wrapper.break_even.type!r}")
     if spec.wrapper.constraints.no_trade:
-        raise Mql5Unsupported("MQL5 target does not yet support no_trade constraints")
+        # NOT a Forge gap: popper/dsl/compiler.py never reads no_trade, so the
+        # backtest traded straight through those windows. An EA that honoured the
+        # tag would trade a different strategy from the one that was falsified.
+        raise Mql5Unsupported(
+            "MQL5 target refuses constraints.no_trade: the backtest does not enforce it "
+            "(needs the news calendar), so emitting it would deploy a strategy that "
+            "trades differently from the one that passed the gauntlet")
 
 
 def _reject_unsupported(spec) -> None:
@@ -732,6 +741,55 @@ def generate_mql5(spec: StrategySpec) -> str:
 
     entry = spec.wrapper.entry
     resting = entry.type != "market"
+    tighten = spec.wrapper.trail.type == "atr" or spec.wrapper.break_even.type == "after_r"
+    tighten_globals = tighten_helper = ""
+    if tighten:
+        moves = []
+        if spec.wrapper.break_even.type == "after_r":
+            moves += [
+                "   // favourable excursion on the last COMPLETED bar, measured against the",
+                "   // ORIGINAL 1R -- never the already-trailed distance",
+                "   double favourable = is_long ? iHigh(_Symbol, _Period, 1) - entry",
+                "                               : entry - iLow(_Symbol, _Period, 1);",
+                f"   if(favourable >= {_wrapper_value(spec.wrapper.break_even.trigger_r)} * managed_risk)",
+                "      next_stop = is_long ? MathMax(next_stop, entry) : MathMin(next_stop, entry);",
+            ]
+        if spec.wrapper.trail.type == "atr":
+            moves += [
+                "   double atr = BufferValue(hATR, 1);",
+                "   if(atr != EMPTY_VALUE && MathIsValidNumber(atr))",
+                "   {",
+                "      double trailed = iClose(_Symbol, _Period, 1)"
+                f" - (is_long ? 1.0 : -1.0) * {_wrapper_value(spec.wrapper.trail.mult)} * atr;",
+                "      next_stop = is_long ? MathMax(next_stop, trailed)"
+                " : MathMin(next_stop, trailed);",
+                "   }",
+            ]
+        tighten_globals = "\ndouble managed_risk = 0.0;"
+        if not resting:
+            tighten_globals = "\ndatetime managed_entry = 0;" + tighten_globals
+        tighten_helper = '''
+// compiler.py tightens the stop AFTER its exit checks, from THAT bar's data, so a
+// tightened stop only binds from the NEXT bar. This EA acts once per new bar, so
+// shift 1 IS that bar and the modified stop is live for the bar now opening --
+// the same timing. Both moves only ever tighten.
+// ponytail: managed_risk is captured the first time a position is seen. Restart
+// the EA mid-trade and it is recaptured from the CURRENT stop, so a break-even
+// that has already moved would re-arm early. Flat restarts are unaffected.
+void TightenStop()
+{{
+   if(!PositionSelect(_Symbol) || managed_risk <= 0.0) return;
+   bool is_long = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY;
+   double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+   double stop = PositionGetDouble(POSITION_SL);
+   double target = PositionGetDouble(POSITION_TP);
+   double next_stop = stop;
+{moves}
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   next_stop = NormalizeDouble(next_stop, digits);
+   if(next_stop != stop) trade.PositionModify(_Symbol, next_stop, target);
+}}
+'''.format(moves=chr(10).join(moves))
     expiry_bars = int(entry.expiry_bars)
     pending_globals = pending_helpers = ""
     entry_calls = [
@@ -838,6 +896,11 @@ bool PlacePending(const bool is_long, const double atr, const double signal_clos
             "         entries_today++;   // the backtest counts a trade when it FILLS",
             "         RepriceStops(pending_atr);",
             "         pending_atr = 0.0;",
+        ] + ([
+            "         // 1R, captured before anything tightens the stop",
+            "         managed_risk = MathAbs(PositionGetDouble(POSITION_PRICE_OPEN)"
+            " - PositionGetDouble(POSITION_SL));",
+        ] if tighten else []) + [
             "      }",
         ]
         pending_lines = [
@@ -904,6 +967,17 @@ bool PlacePending(const bool is_long, const double atr, const double signal_clos
       : trade.Sell(lots, _Symbol, 0.0, stop, target, "Popper {spec.id or ''}");
 }}'''
 
+    if tighten and not resting:
+        position_inner += [
+            "      datetime opened = (datetime)PositionGetInteger(POSITION_TIME);",
+            "      if(opened != managed_entry)",
+            "      {",
+            "         managed_entry = opened;",
+            "         // 1R, captured before anything tightens the stop",
+            "         managed_risk = MathAbs(PositionGetDouble(POSITION_PRICE_OPEN)"
+            " - PositionGetDouble(POSITION_SL));",
+            "      }",
+        ]
     if spec.wrapper.time_stop.type == "bars":
         max_bars = _wrapper_value(spec.wrapper.time_stop.max_bars)
         position_inner += [
@@ -912,6 +986,11 @@ bool PlacePending(const bool is_long, const double atr, const double signal_clos
             f"      if(iBarShift(_Symbol, _Period, (datetime)PositionGetInteger(POSITION_TIME)) - 1 >= (int){max_bars})",
             "         trade.PositionClose(_Symbol);",
         ]
+        if tighten:
+            # the backtest tightens only when the time stop did NOT close the trade
+            position_inner += ["      else", "         TightenStop();"]
+    elif tighten:
+        position_inner.append("      TightenStop();")
 
     level_helpers = _helper_source(helpers)
     position_lines = ["   if(PositionSelect(_Symbol)) return;"]
@@ -938,7 +1017,7 @@ CTrade trade;
 {chr(10).join(handles)}
 datetime last_bar = 0;
 int entries_today = 0;
-int day_key = -1;{pending_globals}
+int day_key = -1;{pending_globals}{tighten_globals}
 
 double Sign(const double value)
 {{
@@ -1035,7 +1114,7 @@ double RiskLots(const double stop_distance)
 }}
 
 {level_helpers}{open_position}
-{pending_helpers}
+{pending_helpers}{tighten_helper}
 int OnInit()
 {{
 {chr(10).join(on_init)}

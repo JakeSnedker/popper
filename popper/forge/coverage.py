@@ -42,10 +42,12 @@ _CAPABILITIES: dict[str, dict[str, bool]] = {
         "level exit anchored to prior_fractal_hi/lo or bb_line": True,
         # 1R is only known at the fill; a broker needs the volume at placement
         "level exit with a resting entry": False,
-        "trail.atr": False,
-        "break_even.after_r": False,
+        "trail.atr": True,
+        "break_even.after_r": True,
         "time_stop.bars": True,
         "constraints.max_trades_per_day": True,
+        # NOT a Forge gap: compiler.py never reads no_trade, so honouring the tag
+        # in a target would deploy a strategy the backtest never ran
         "constraints.no_trade": False,
         "higher_timeframe_features": False,
         "exit on the entry bar": False,
@@ -64,10 +66,12 @@ _CAPABILITIES: dict[str, dict[str, bool]] = {
         "level exit anchored to prior_fractal_hi/lo or bb_line": True,
         # 1R is only known at the fill; a broker needs the volume at placement
         "level exit with a resting entry": False,
-        "trail.atr": False,
-        "break_even.after_r": False,
+        "trail.atr": True,
+        "break_even.after_r": True,
         "time_stop.bars": True,
         "constraints.max_trades_per_day": True,
+        # NOT a Forge gap: compiler.py never reads no_trade, so honouring the tag
+        # in a target would deploy a strategy the backtest never ran
         "constraints.no_trade": False,
         "higher_timeframe_features": False,
         "exit on the entry bar": True,

@@ -107,10 +107,19 @@ def _validate(spec: StrategySpec) -> None:
         raise PineUnsupported(f"Pine target does not implement stop type {spec.wrapper.stop.type!r}")
     if spec.wrapper.target.type not in ("ratio", "level"):
         raise PineUnsupported(f"Pine target does not implement target type {spec.wrapper.target.type!r}")
-    if spec.wrapper.trail.type != "none" or spec.wrapper.break_even.type != "none":
-        raise PineUnsupported("Pine target does not yet support trail or break-even wrappers")
+    if spec.wrapper.trail.type not in ("none", "atr"):
+        raise PineUnsupported(f"Pine target does not implement trail type {spec.wrapper.trail.type!r}")
+    if spec.wrapper.break_even.type not in ("none", "after_r"):
+        raise PineUnsupported(
+            f"Pine target does not implement break-even type {spec.wrapper.break_even.type!r}")
     if spec.wrapper.constraints.no_trade:
-        raise PineUnsupported("Pine target does not yet support no_trade constraints")
+        # NOT a Forge gap: popper/dsl/compiler.py never reads no_trade, so the
+        # backtest traded straight through those windows. An EA that honoured the
+        # tag would trade a different strategy from the one that was falsified.
+        raise PineUnsupported(
+            "Pine target refuses constraints.no_trade: the backtest does not enforce it "
+            "(needs the news calendar), so emitting it would deploy a strategy that "
+            "trades differently from the one that passed the gauntlet")
 
 
 def _reject_unsupported(spec) -> None:
@@ -586,6 +595,81 @@ def _resting_entry_lines(entry, anchor: str | None = None) -> list[str]:
     ]
 
 
+def _tightens(spec: StrategySpec) -> bool:
+    return spec.wrapper.trail.type == "atr" or spec.wrapper.break_even.type == "after_r"
+
+
+def _tighten_lines(spec: StrategySpec, stop_var: str, risk_var: str) -> list[str]:
+    """Move the stop for FUTURE bars from THIS bar's data -- compiler.py step 3.
+
+    The compiler runs this AFTER its own price checks, so a tightened stop only
+    binds from the next bar; a Pine exit order placed now becomes live at the
+    next bar too, which is the same timing. Both moves only ever tighten (max
+    for a long, min for a short) and the break-even measures the favourable
+    excursion against the ORIGINAL 1R, never the trailed distance.
+
+    `barstate.isconfirmed` keeps the intrabar recalculation on a fill bar
+    (calc_on_order_fills) from trailing off a partial close, which would latch a
+    tighter stop than the backtest ever had.
+    """
+    w = spec.wrapper
+    if not _tightens(spec):
+        return []
+    lines = [
+        f"if barstate.isconfirmed and strategy.position_size != 0 and not na({stop_var})",
+    ]
+    if w.break_even.type == "after_r":
+        lines += [
+            "    float favourable = in_long ? high - entry_price : entry_price - low",
+            f"    if favourable >= {_wrapper_value(w.break_even.trigger_r)} * {risk_var}",
+            f"        {stop_var} := in_long ? math.max({stop_var}, entry_price)"
+            f" : math.min({stop_var}, entry_price)",
+        ]
+    if w.trail.type == "atr":
+        lines += [
+            "    if not na(atr_14)",
+            f"        float trailed = close - dir_sign * {_wrapper_value(w.trail.mult)} * atr_14",
+            f"        {stop_var} := in_long ? math.max({stop_var}, trailed)"
+            f" : math.min({stop_var}, trailed)",
+        ]
+    return lines
+
+
+def _managed_exit_lines(spec: StrategySpec) -> list[str]:
+    """The ATR-stop / ratio-target exit, held in state so a trail can move it.
+
+    Only emitted when a trail or break-even is active. Without one the stop
+    never moves, so the stateless form stays -- and stays byte-identical.
+    """
+    w = spec.wrapper
+    return [
+        "",
+        "in_long = strategy.position_size > 0",
+        "entry_price = strategy.position_avg_price",
+        "dir_sign = in_long ? 1.0 : -1.0",
+        "var float cur_stop = na",
+        "var float cur_target = na",
+        "var float risk_distance = na",
+        "if strategy.position_size == 0",
+        "    cur_stop := na",
+        "    cur_target := na",
+        "    risk_distance := na",
+        "else if na(cur_stop)",
+        "    // signal_atr is the SIGNAL bar's ATR, so a resting order that fills bars",
+        "    // later still risks the distance the hypothesis was written with",
+        f"    risk_distance := nz(signal_atr, atr_14) * {_wrapper_value(w.stop.mult)}",
+        "    cur_stop := entry_price - dir_sign * risk_distance",
+        f"    cur_target := entry_price + dir_sign * risk_distance"
+        f" * {_wrapper_value(w.target.ratio)}",
+    ] + _tighten_lines(spec, "cur_stop", "risk_distance") + [
+        "if strategy.position_size > 0 and not na(cur_stop)",
+        '    strategy.exit("Long exit", "Long", stop=cur_stop, limit=cur_target)',
+        "if strategy.position_size < 0 and not na(cur_stop)",
+        '    strategy.exit("Short exit", "Short", stop=cur_stop, limit=cur_target)',
+        "",
+    ]
+
+
 def _level_exit_lines(spec: StrategySpec) -> list[str]:
     """Freeze the stop/target on the bar the position OPENED, from that bar's levels.
 
@@ -611,6 +695,10 @@ def _level_exit_lines(spec: StrategySpec) -> list[str]:
             "entry_price + dir_sign * math.abs(entry_price - new_stop) * "
             f"{_wrapper_value(w.target.ratio)}"
         )
+    risk_lines = ["var float risk_distance = na"] if _tightens(spec) else []
+    risk_reset = ["    risk_distance := na"] if _tightens(spec) else []
+    risk_set = (["        risk_distance := math.abs(entry_price - new_stop)"]
+                if _tightens(spec) else [])
     return [
         "",
         "in_long = strategy.position_size > 0",
@@ -618,9 +706,11 @@ def _level_exit_lines(spec: StrategySpec) -> list[str]:
         "dir_sign = in_long ? 1.0 : -1.0",
         "var float lvl_stop = na",
         "var float lvl_target = na",
+    ] + risk_lines + [
         "if strategy.position_size == 0",
         "    lvl_stop := na",
         "    lvl_target := na",
+    ] + risk_reset + [
         "else if na(lvl_stop)",
         f"    float new_stop = {stop_expr}",
         f"    float new_target = {target_expr}",
@@ -633,8 +723,10 @@ def _level_exit_lines(spec: StrategySpec) -> list[str]:
         "    if coherent",
         "        lvl_stop := new_stop",
         "        lvl_target := new_target",
+    ] + risk_set + [
         "    else",
         '        strategy.close_all(comment="no level", immediately=true)',
+    ] + _tighten_lines(spec, "lvl_stop", "risk_distance") + [
         "if strategy.position_size > 0 and not na(lvl_stop)",
         '    strategy.exit("Long exit", "Long", stop=lvl_stop, limit=lvl_target)',
         "if strategy.position_size < 0 and not na(lvl_stop)",
@@ -752,6 +844,8 @@ def generate_pine(spec: StrategySpec) -> str:
         )
     if spec.wrapper.stop.type == "level" or spec.wrapper.target.type == "level":
         lines += _level_exit_lines(spec)
+    elif _tightens(spec):
+        lines += _managed_exit_lines(spec)
     else:
         lines += [
             "",
