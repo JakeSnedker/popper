@@ -230,6 +230,7 @@ class CompiledStrategy:
         pending_atr = np.nan
         # a resting limit/stop order: direction, price, and bars left to live
         rest_dir, rest_px, rest_left = 0, np.nan, 0
+        rest_anchor_i = 0
         entry = stop = target = risk = np.nan
         entry_i = 0
         day_trades: dict = {}
@@ -257,13 +258,23 @@ class CompiledStrategy:
             equity_curve.append(round(equity, 6))
             pos = 0
 
-        def try_open(i: int, direction: int, e: float, signal_atr: float) -> bool:
+        def try_open(i: int, direction: int, e: float, signal_atr: float,
+                     anchor_i: int | None = None) -> bool:
             """Open `direction` at price `e` on bar i, if the trade is coherent.
 
             Shared by every entry type: a market fill at the open and a touched
             limit/stop order differ only in the price handed in here.
+
+            `anchor_i` is the bar a LEVEL stop/target is measured from, which is
+            not always the fill bar. An ATR stop already uses `signal_atr` from
+            the bar the signal fired, so a resting order's risk is fixed when the
+            order is placed; reading the level at the fill bar instead made the
+            same trade use two different timings. It also made the spec
+            undeployable, because a broker fixes order volume at placement and
+            1R -- which sets that volume -- would not be known until the fill.
             """
             nonlocal pos, entry, entry_i, risk, stop, target
+            a = i if anchor_i is None else anchor_i
             d = days[i]
             if max_per_day is not None and day_trades.get(d, 0) >= max_per_day:
                 return False
@@ -272,7 +283,7 @@ class CompiledStrategy:
                 s = (e - direction * sl_mult * signal_atr
                      if not np.isnan(signal_atr) and signal_atr > 0 else np.nan)
             else:
-                s = stop_lvl[i] + stop_off
+                s = stop_lvl[a] + stop_off
             # GUARD: skip incoherent entries — NaN anchor (level not formed yet)
             # or a stop on the wrong side of entry
             if np.isnan(s) or not (s < e if direction == 1 else s > e):
@@ -281,7 +292,7 @@ class CompiledStrategy:
             if rr is not None:
                 tp = e + direction * rr * r_
             else:
-                tp = tgt_lvl[i] + tgt_off
+                tp = tgt_lvl[a] + tgt_off
                 # GUARD: target must sit on the profit side of entry
                 if np.isnan(tp) or not (tp > e if direction == 1 else tp < e):
                     return False
@@ -314,7 +325,9 @@ class CompiledStrategy:
                     elif rest_dir == -1 and low[i] <= rest_px:
                         touched, fill = True, min(o[i], rest_px)
                 if touched:
-                    try_open(i, rest_dir, fill, pending_atr)
+                    # anchor to the PLACEMENT bar: that is where the order, and
+                    # therefore its size, was committed
+                    try_open(i, rest_dir, fill, pending_atr, anchor_i=rest_anchor_i)
                     rest_dir, rest_px, rest_left = 0, np.nan, 0
                 else:
                     rest_left -= 1
@@ -361,13 +374,13 @@ class CompiledStrategy:
                     elif entry_lvl is not None:
                         rest_px = entry_lvl[i]
                         rest_dir = direction if not np.isnan(rest_px) else 0
-                        rest_left = expiry_bars
+                        rest_left, rest_anchor_i = expiry_bars, i
                     elif not np.isnan(atr[i]):
                         # limit rests at a BETTER price, stop at a WORSE one
                         away = entry_off * atr[i]
                         sign = -1 if entry_kind == "limit" else 1
                         rest_px = c[i] + direction * sign * away
-                        rest_dir, rest_left = direction, expiry_bars
+                        rest_dir, rest_left, rest_anchor_i = direction, expiry_bars, i
 
         if pos != 0:  # close a dangling position at the last close
             close_trade(len(bars) - 1, c[-1], "eod")
