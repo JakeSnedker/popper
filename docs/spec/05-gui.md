@@ -1,6 +1,6 @@
 # 05 — GUI: the HUD Control Center
 
-
+The interface is Popper's showcase (Jake's own use **and** the public demo). Direction, from Jake's
 reference dashboards (`design-source/gui-refs/`: `popper dashboard.htm`, `Popper Dashboard 2.jpg`,
 `Popper dasboard 3.jpg`): a **dark sci-fi HUD / command-center** — near-black navy surface, glowing
 cyan/teal primary, multicolor neon data, modular framed panels around a **central 3D hero**, ring gauges,

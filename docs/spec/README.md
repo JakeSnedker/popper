@@ -1,7 +1,7 @@
 # Popper — SPEC Pack
 
 The authoritative build specification: the **target Fable 5 builds toward**. It reconciles the repo's
-
+shipped Phase-0 code with the **full design** recovered from working docs (the repo's original
 `docs/ARCHITECTURE.md` + `ROADMAP.md` are the *simplified thin-loop* version; this pack restores the
 complete system).
 
@@ -22,12 +22,10 @@ points to source material, and flags open **DECISION**s with a recommended defau
 ## Source documents (the spec consolidates these — all now in-repo)
 | Source | Holds | Path |
 |--------|-------|------|
-
-| **Research Notes** | Fullest design: Alpha·Wrapper·Context, agents, categorisation, portfolio, exploration toolkit | `docs/design-source/42_Project_Research_Notes.html` |
-| **System Proposal** | The proposal framed around explore-vs-exploit | `docs/design-source/42_System_Proposal.html` |
-| **Loop Schematic** | The pipeline diagram + one-read explanation | `docs/design-source/42_Research_Loop_Schematic.md` |
-| **Loop Diagram** | Visual of the loop | `docs/design-source/42_Research_Loop_Diagram.png` |
-
+| **Research Notes** | Fullest design: Alpha·Wrapper·Context, agents, categorisation, portfolio, exploration toolkit | `docs/design-source/Project_Research_Notes.html` |
+| **System Proposal** | The proposal framed around explore-vs-exploit | `docs/design-source/System_Proposal.html` |
+| **Loop Schematic** | The pipeline diagram + one-read explanation | `docs/design-source/Research_Loop_Schematic.md` |
+| **Loop Diagram** | Visual of the loop | `docs/design-source/Research_Loop_Diagram.png` |
 | **Repo architecture** | Phase-0 artifact contracts + thin loop (built) | `docs/ARCHITECTURE.md`, `docs/ROADMAP.md` |
 | **JJC validation-framework** | Falsification backbone to port/generalize | `C:\Users\Jakes\Projects\GitHub\quantitative-strategy-validation-framework\` (`METHODOLOGY.md`, `optimizer/walk_forward_config.py`, `optimizer/monte_carlo.py`, `optimizer/analyze_edge.py`, `optimizer/staged_optimizer.py`, `optimizer/docs/OPTIMIZATION_SYSTEM_V2.md`) |
 | **Market data** | US30 M1+M5 bars (export via `scripts/export_mt5.py`) | `data/us30/` |

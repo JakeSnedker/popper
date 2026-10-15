@@ -2,7 +2,7 @@
 
 The alpha memory is not a log — it is **the map**: every tested alpha organised so the system can *avoid*
 crowded regions, *target* sparse ones, and *go beyond* into whitespace. Source:
-`design-source/42_Project_Research_Notes.html` §3,9–12,17; `42_System_Proposal.html` §5–8.
+`design-source/Research_Notes.html` §3,9–12,17; `System_Proposal.html` §5–8.
 
 ## The map, technically
 - A **vector store** of `embedding + behaviour_fingerprint + faceted_metadata` per alpha.

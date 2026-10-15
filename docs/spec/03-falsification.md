@@ -1,6 +1,6 @@
 # 03 — The Falsification Gauntlet (the moat)
 
-
+A strategy must survive attempts to *disprove* it. This is Popper's headline and Jake's deepest moat. The
 backbone already exists as the **JJC validation-framework** — we **port** its methodology + statistics,
 **add** the López de Prado multiple-testing layer it lacks, and **drop** its MT5-tester coupling.
 

@@ -1,4 +1,4 @@
-
+"""Scorecard — multi-metric evaluation of an experiment. Evaluation beyond backtest PnL.
 
 A strategy is a *vector*, not a number. Produced by the Scorecard subsystem (Phase 4),
 consumed by the Falsification Gauntlet to reach a Verdict.

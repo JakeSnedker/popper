@@ -9,14 +9,13 @@ Popper is a self-improving system that **discovers, falsifies, and promotes** tr
 with minimal human intervention. The moat is not any single strategy — it's the **discovery engine**
 that generates them, kills the false ones before they cost money, and never re-explores a dead idea.
 
-
-research-to-production stack — hypothesis generation → strategy DSL → falsification → alpha memory →
+Popper owns the full research-to-production stack — hypothesis generation → strategy DSL → falsification → alpha memory →
 multi-metric evaluation → live promotion.
 
 ## Why "Popper"
 The core engineering bet is **falsification-first**: a strategy must *survive* a gauntlet of attempts
 to disprove it, not merely show a pretty backtest. This is Popperian science applied to alpha discovery,
-
+and it's the part that separates a real platform from a backtest farm.
 
 ## Current target
 - **Data/execution:** MetaTrader 5 — US30, NAS100 (indices). Portable to Futures (NinjaTrader) later.

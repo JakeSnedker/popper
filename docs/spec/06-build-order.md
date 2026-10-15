@@ -2,7 +2,7 @@
 
 **Target = the full design (`00`–`04`). Order = thin-loop-first**, then layer the multi-agent /
 explore-exploit / portfolio machinery. The docs' own advice: *"Start narrow and real; deepen once the loop
-
+turns."* Each phase leaves a working, demoable milestone.
 
 ## Phase map (reconciles repo `ROADMAP.md` with the full design → GSD phases)
 | Phase | Goal | Adds vs shipped | Done-when |

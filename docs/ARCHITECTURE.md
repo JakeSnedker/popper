@@ -1,8 +1,8 @@
 # Popper — Architecture
 
 ## 1. Design principle: contracts before code
-
-and research pipelines."* So the spine of Popper is a set of **immutable artifacts** that flow between
+The goal is to design systems, not just models — abstractions such as DSLs, evaluation frameworks,
+and research pipelines. So the spine of Popper is a set of **immutable artifacts** that flow between
 **stateless subsystems**. Each subsystem reads one artifact type and writes another. Swap any subsystem's
 internals without touching the others. State lives in artifacts + alpha memory, never in the loop.
 
@@ -42,7 +42,7 @@ id, spec_id, dataset_id, period
 trades[], equity_curve, raw_metrics{pnl, sharpe, win_rate, trades_n, ...}
 ```
 
-
+### Scorecard  (metrics beyond PnL)
 ```
 experiment_id
 robustness          # spread of performance across CPCV folds

@@ -1,7 +1,7 @@
 # 02 — The Agent Roster & Access Control
 
-The multi-agent research pipeline. Source: `design-source/42_Project_Research_Notes.html` §6–8,
-`42_System_Proposal.html` §4–5.
+The multi-agent research pipeline. Source: `design-source/Research_Notes.html` §6–8,
+`System_Proposal.html` §4–5.
 
 ## The load-bearing rule
 **Results are hidden from the generator.** If the hypothesis agent can see performance, it copies winners
@@ -29,7 +29,7 @@ most important single piece. It acts at:
 - **Re-categorise / Exploit** — assign workers, prune dead categories.
 - **Feedback** — update priorities from what the map has learned.
 
-Guardrail (from the exploration toolkit, `42_Project_Research_Notes.html` §16): a **hard budget split**
+Guardrail (from the exploration toolkit, `Research_Notes.html` §16): a **hard budget split**
 (recommended default **70 exploit / 20 explore / 10 wildcard**), novelty as a scored metric, favour
 low-correlation alphas, a diversity alarm that triggers mutation storms when generation narrows.
 

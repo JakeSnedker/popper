@@ -85,8 +85,8 @@ Prioritize after the loop is alive:
 - Memory (P4) before autonomy (P7) — autonomy without memory just re-explores forever.
 - Manual loop (P5) before agentic loop (P6/7) — prove the pipe with a human in the seat, then automate.
 
-
+## Portfolio value at each checkpoint
 - After **P1**: "I designed a Strategy DSL + compiler for safe research→live representation." (systems design)
 - After **P3**: "I built a falsification framework that kills overfit/leaked alpha automatically." (the moat)
 - After **P5**: a live demo of a research pipeline producing scored, judged results.
-- After **P7**: an autonomous discovery agent — the exact thing the role owns.
+- After **P7**: an autonomous discovery agent, end to end.

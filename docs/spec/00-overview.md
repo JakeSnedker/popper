@@ -4,7 +4,7 @@
 A self-improving discovery system **tunnels**: as the memory of tried ideas grows, generation collapses
 into a narrow, already-explored region and novelty decays. The goal is to keep producing genuinely novel,
 *uncorrelated* edges while still exploiting what already works — under finite compute. This is an
-**exploration-vs-exploitation + resource-allocation** problem. (Source: `design-source/42_System_Proposal.html`.)
+**exploration-vs-exploitation + resource-allocation** problem. (Source: `design-source/System_Proposal.html`.)
 
 ## Design principles
 1. **Falsification-first.** A strategy must survive honest attempts to *disprove* it (out-of-sample,
@@ -49,7 +49,7 @@ split (`01`), and `Scorecard` must gain the behaviour-signature + correlation fi
 - **Build target:** the full design. **Build order:** thin-loop-first → agents → explore/exploit → portfolio (`06`).
 - **Models:** Fable 5 builds; runtime = Opus 4.8 (Director/Synthesis) + Sonnet (Hypothesis/Wildcard).
 
-
+## The six core capabilities (all covered)
 multi-agent pipeline (`02`) · Strategy DSL+compiler (`01`) · falsification-first eval (`03`) · alpha memory
 (`04`) · metrics beyond PnL — robustness/regime/capacity/execution-realism/novelty (`03`,`04`) ·
-
+research→production handoff (`06`).
