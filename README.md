@@ -2,7 +2,7 @@
 
 > *"A theory that is not refutable by any conceivable event is non-scientific."* — Karl Popper
 
-**Private collaborative project. Copyright 2026 Jake Snedker. All rights reserved.**
+**Private project. Copyright 2026 Jake Snedker. All rights reserved.**
 Operator access does not make this an open-source project. See `LICENSE`.
 
 Popper is a self-improving system that **discovers, falsifies, and promotes** trading strategies
