@@ -32,8 +32,12 @@ def list_nodes(user: TeamPrincipal = Depends(require_team_user)) -> dict:
         nodes = node_presence.fleet()
     except Exception as exc:  # noqa: BLE001 - a dead fleet view must not 500 the dashboard.
         return {"nodes": [], "healthy": 0, "error": f"{type(exc).__name__}: {exc}"}
+    # Mirror the RPC rule exactly: admins control any node, researchers only
+    # their own. Enabling a toggle the database will refuse looks like a bug.
     for node in nodes:
-        node["can_toggle"] = (user.role in {"admin", "researcher"})
+        node["can_toggle"] = user.role == "admin" or (
+            user.role == "researcher" and str(node.get("operator_id")) == str(user.user_id)
+        )
     return {
         "nodes": nodes,
         "healthy": sum(1 for node in nodes if node.get("healthy")),

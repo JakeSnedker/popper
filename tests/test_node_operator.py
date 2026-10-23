@@ -159,6 +159,9 @@ def test_heartbeat_payload_matches_node_status_migration(monkeypatch):
     assert sent, "heartbeat was not sent"
     missing = set(sent[0]) - columns
     assert not missing, f"node_status migration is missing columns: {sorted(missing)}"
+    # A heartbeat that carries control columns overwrites dashboard toggles.
+    controls = {"switch", "switch_requested_at", "exploit", "providers_off"} & set(sent[0])
+    assert not controls, f"heartbeat must not write control columns: {sorted(controls)}"
 
 
 def test_presence_failure_never_stops_research(monkeypatch):
@@ -288,3 +291,22 @@ def test_fleet_marks_online_separately_from_healthy(monkeypatch):
     assert fleet["fresh-running"]["exploit"] == "on"
     assert fleet["fresh-running"]["requeue_pending"] is False
     assert fleet["requeueing"]["requeue_pending"] is True
+
+
+def test_fleet_toggles_match_rpc_ownership_rule(monkeypatch):
+    """Researchers control only their own node; the RPC refuses anything else."""
+    from popper import node_presence
+    from popper.api.fleet_router import list_nodes
+    from popper.security import TeamPrincipal
+
+    rows = [{"machine_id": "mine", "operator_id": "u-opa"},
+            {"machine_id": "theirs", "operator_id": "u-jake"}]
+    monkeypatch.setattr(node_presence, "fleet", lambda: [dict(r) for r in rows])
+
+    def toggles(role, uid):
+        nodes = list_nodes(TeamPrincipal(user_id=uid, email="x@y", role=role))["nodes"]
+        return {n["machine_id"]: n["can_toggle"] for n in nodes}
+
+    assert toggles("researcher", "u-opa") == {"mine": True, "theirs": False}
+    assert toggles("admin", "u-jake") == {"mine": True, "theirs": True}
+    assert toggles("viewer", "u-opa") == {"mine": False, "theirs": False}

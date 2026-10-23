@@ -65,7 +65,7 @@ function Toggle({
       <button
         onClick={toggle}
         disabled={!enabled || busy}
-        title={enabled ? title : "Read-only in viewer mode"}
+        title={enabled ? title : "You can only control your own node"}
         className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold transition ${
           enabled ? "hover:brightness-125 cursor-pointer" : "cursor-not-allowed opacity-40"
         } ${on ? "bg-emerald-600/20 text-emerald-300" : "bg-slate-700 text-slate-300"}`}
@@ -127,7 +127,7 @@ function ProviderToggles({ node, onDone }: { node: FleetNode; onDone: () => void
                   ? on
                     ? `Park ${label} on this node and keep the others running`
                     : `Resume ${label} on this node`
-                  : "Read-only in viewer mode"
+                  : "You can only control your own node"
               }
               className={`rounded px-1.5 py-1 text-[9px] font-semibold transition ${
                 enabled ? "hover:brightness-125 cursor-pointer" : "cursor-not-allowed opacity-40"

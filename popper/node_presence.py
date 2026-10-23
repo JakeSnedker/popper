@@ -61,16 +61,16 @@ def publish(state: dict[str, Any], force: bool = False) -> str | None:
     if not force and (now - _last_push) < PUSH_INTERVAL_SECONDS:
         return None
 
+    # Telemetry only. switch/exploit/providers_off are control columns written
+    # solely through the popper_set_node_* RPCs (dashboard and local CLI alike).
+    # Sending them here re-uploaded this node's stale local copy every 60s and
+    # silently reverted every dashboard toggle before the worker could adopt it.
     row = {
         "machine_id": settings.machine_id,
         "operator_label": settings.operator_id,
         "status": str(state.get("status") or "unknown"),
         "release_id": settings.release_id,
         "dataset_id": settings.dataset_id,
-        "switch": str(state.get("switch") or "on"),
-        "switch_requested_at": state.get("switch_requested_at"),
-        "exploit": str(state.get("exploit") or "on"),
-        "providers_off": ",".join(sorted(state.get("providers_off") or [])),
         "last_error": state.get("last_error"),
         "started_at": state.get("started_at"),
         "heartbeat_at": _now(),
