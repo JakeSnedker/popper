@@ -79,7 +79,7 @@ function Require-Commands {
     & (Join-Path $PSScriptRoot "check-deps.ps1")
     if ($LASTEXITCODE -ne 0) {
         throw ("Prerequisites are missing. Run operator\Popper-Check.cmd -Install, " +
-               "then run setup again. See docs\OPERATOR_ONBOARDING.md.")
+               "then run setup again. See README.md.")
     }
 }
 

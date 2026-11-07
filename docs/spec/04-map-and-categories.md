@@ -1,8 +1,7 @@
 # 04 — Alpha Memory as a Map, Categories & Portfolio
 
 The alpha memory is not a log — it is **the map**: every tested alpha organised so the system can *avoid*
-crowded regions, *target* sparse ones, and *go beyond* into whitespace. Source:
-`design-source/Research_Notes.html` §3,9–12,17; `System_Proposal.html` §5–8.
+crowded regions, *target* sparse ones, and *go beyond* into whitespace.
 
 ## The map, technically
 - A **vector store** of `embedding + behaviour_fingerprint + faceted_metadata` per alpha.

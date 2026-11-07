@@ -8,9 +8,8 @@
   base tools, clones the repo at a release tag, and hands over to the existing
   operator\Popper-Setup.cmd -- it does not reimplement setup.
 
-  It deliberately does NOT gate access. The private repo is the gate: a clone by
-  anyone who is not a collaborator fails at GitHub, and the dataset and Supabase
-  account are separately controlled. A public URL here is not a public Popper.
+  The code is public. The dataset and any Supabase project are your own: this
+  script does not provide either one.
 #>
 [CmdletBinding()]
 param(

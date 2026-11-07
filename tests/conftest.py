@@ -8,7 +8,23 @@ boundary set `auth_required` themselves; monkeypatch inside a test wins over
 this fixture.
 """
 
+from pathlib import Path
+
 import pytest
+
+_DATA = Path(__file__).resolve().parents[1] / "data"
+
+# These modules load real US30 bars at import, and market data is not in Git.
+collect_ignore = (
+    []
+    if (_DATA / "us30" / "US30_M5.parquet").exists() or (_DATA / "ftmo-us30-v1").exists()
+    else [
+        "test_forge_features.py",
+        "test_forge_levels.py",
+        "test_forge_resting_level_exits.py",
+        "test_forge_wrappers.py",
+    ]
+)
 
 
 @pytest.fixture(autouse=True)

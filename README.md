@@ -1,37 +1,77 @@
-# Popper — Autonomous Research Platform
+# Popper
 
 > *"A theory that is not refutable by any conceivable event is non-scientific."* — Karl Popper
 
-**Private project. Copyright 2026 Jake Snedker. All rights reserved.**
-Operator access does not make this an open-source project. See `LICENSE`.
+Popper is an autonomous research platform that generates trading strategy ideas, tries hard to
+disprove them, and keeps only what survives. It is for systematic traders and independent researchers
+who want strategies tested against overfitting, not just shown with a good backtest.
 
-Popper is a self-improving system that **discovers, falsifies, and promotes** trading strategies
-with minimal human intervention. The moat is not any single strategy — it's the **discovery engine**
-that generates them, kills the false ones before they cost money, and never re-explores a dead idea.
+**Status: alpha, in active development.** Popper is a research tool. It has not yet produced a strategy
+with a proven live record, and nothing here is financial advice.
 
-Popper owns the full research-to-production stack — hypothesis generation → strategy DSL → falsification → alpha memory →
-multi-metric evaluation → live promotion.
+## How it works
 
-## Why "Popper"
-The core engineering bet is **falsification-first**: a strategy must *survive* a gauntlet of attempts
-to disprove it, not merely show a pretty backtest. This is Popperian science applied to alpha discovery,
-and it's the part that separates a real platform from a backtest farm.
+Propose a falsifiable hypothesis → express it in the strategy DSL → backtest → run the falsification
+gauntlet → score it on several metrics → record everything in alpha memory → feed the verdicts back
+into the next round of hypotheses.
 
-## Current target
-- **Data/execution:** MetaTrader 5 — US30, NAS100 (indices). Portable to Futures (NinjaTrader) later.
-- **Agents:** role-routed Claude.ai, ChatGPT/Codex, and free DeepSeek via OpenCode.
-- **Store:** SQLite locally or shared Supabase alpha memory.
-- **Status:** Steps 1-5 complete; Windows operator packaging is in Step 6.
-  See `docs/POPPER_NODE_V01_MASTER_PLAN.md`, `docs/WINDOWS_OPERATOR_GUIDE.md`, and `docs/LLM_ROUTING.md`.
-- **Market data:** never stored in Git. Every operator mounts the same separately versioned dataset.
+The core bet is **falsification first**. A strategy must survive purged and embargoed cross-validation,
+Deflated Sharpe, PBO and parameter-stability checks before it counts as anything.
 
-## The loop, in one breath
-Propose a falsifiable hypothesis → express it in the Strategy DSL → backtest → run the falsification
-gauntlet → score on a vector of metrics (not just PnL) → record everything to alpha memory → promote
-survivors, feed verdicts back to the hypothesis engine. Repeat autonomously.
+## What's in the repo
 
-## Reuse from prior work (JJC BOT V13)
-- JJC's per-magic parameter structure → seeds the **DSL schema**.
-- JJC's 5-stage staged optimizer with gates → structural blueprint for the **falsification gauntlet**.
-- JJC's overfitting heuristics (parameter stability at 1.3/1.5/1.7, expectancy > win-rate) → encoded as
-  **automated falsification tests**.
+| Part | Where |
+|------|-------|
+| Strategy DSL, compiler and validator | `popper/dsl/` |
+| Backtest runner and metrics | `popper/experiments/` |
+| Falsification gauntlet | `popper/falsify/` |
+| Research agents and LLM routing | `popper/research/`, `docs/agents/`, `docs/LLM_ROUTING.md` |
+| Explore and exploit orchestration | `popper/orchestrator/` |
+| Alpha memory (SQLite or Supabase) | `popper/memory/`, `supabase/` |
+| Portfolio constructor | `popper/portfolio/` |
+| Pine and MQL5 export | `popper/forge/` |
+| API and React dashboard | `popper/api/`, `gui/` |
+
+**Built with:** Python 3.11+, FastAPI, pandas, NumPy, React and TypeScript, SQLite or Supabase, and
+MetaTrader 5 for market data and execution checks.
+
+Start with `docs/ARCHITECTURE.md`, the specs in `docs/spec/`, and the plan in `ROADMAP.md`.
+
+## Run it
+
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+cp .env.example .env             # Windows: copy .env.example .env
+
+python -m pytest                 # tests that need market data are skipped without it
+popper seed                      # add example hypotheses to local alpha memory
+popper serve                     # API at http://127.0.0.1:8000
+```
+
+Dashboard, in a second terminal:
+
+```bash
+cd gui
+npm ci
+npm run dev                      # http://localhost:5173
+```
+
+## What you need to bring
+
+- **Market data.** No market data is stored in Git. `popper run` and `popper research` need your own
+  bars in `data/`. `scripts/export_mt5.py` exports them from a MetaTrader 5 terminal on Windows.
+- **An LLM provider, for autonomous research.** See `docs/LLM_ROUTING.md`.
+- **Your own results stay yours.** Alpha memory and data files are gitignored, so strategies you find
+  stay on your machine or in your own Supabase project.
+
+## Background
+
+Popper was designed and directed by Jake Snedker and built with AI coding assistants. It draws on
+lessons from JJC BOT, an earlier MetaTrader bot Jake built with two collaborators, whose work is used
+with their permission.
+
+## License
+
+[Mozilla Public License 2.0](LICENSE).

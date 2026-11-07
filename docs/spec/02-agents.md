@@ -1,7 +1,6 @@
 # 02 — The Agent Roster & Access Control
 
-The multi-agent research pipeline. Source: `design-source/Research_Notes.html` §6–8,
-`System_Proposal.html` §4–5.
+The multi-agent research pipeline.
 
 ## The load-bearing rule
 **Results are hidden from the generator.** If the hypothesis agent can see performance, it copies winners

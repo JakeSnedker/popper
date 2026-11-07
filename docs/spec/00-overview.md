@@ -4,7 +4,7 @@
 A self-improving discovery system **tunnels**: as the memory of tried ideas grows, generation collapses
 into a narrow, already-explored region and novelty decays. The goal is to keep producing genuinely novel,
 *uncorrelated* edges while still exploiting what already works — under finite compute. This is an
-**exploration-vs-exploitation + resource-allocation** problem. (Source: `design-source/System_Proposal.html`.)
+**exploration-vs-exploitation + resource-allocation** problem.
 
 ## Design principles
 1. **Falsification-first.** A strategy must survive honest attempts to *disprove* it (out-of-sample,
