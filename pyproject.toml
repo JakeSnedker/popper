@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 supabase = ["supabase>=2.4"]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [project.scripts]
 popper = "popper.cli:main"

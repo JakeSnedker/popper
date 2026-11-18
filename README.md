@@ -1,5 +1,7 @@
 # Popper
 
+[![CI](https://github.com/JakeSnedker/popper/actions/workflows/ci.yml/badge.svg)](https://github.com/JakeSnedker/popper/actions/workflows/ci.yml)
+
 > *"A theory that is not refutable by any conceivable event is non-scientific."* — Karl Popper
 
 Popper is an autonomous research platform that generates trading strategy ideas, tries hard to
