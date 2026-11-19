@@ -63,7 +63,8 @@ npm run dev                      # http://localhost:5173
 ## What you need to bring
 
 - **Market data.** No market data is stored in Git. `popper run` and `popper research` need your own
-  bars in `data/`. `scripts/export_mt5.py` exports them from a MetaTrader 5 terminal on Windows.
+  OHLC bars in `data/`; [data/README.md](data/README.md) gives the format and a CSV example.
+  `scripts/export_mt5.py` exports them from a MetaTrader 5 terminal on Windows.
 - **An LLM provider, for autonomous research.** See `docs/LLM_ROUTING.md`.
 - **Your own results stay yours.** Alpha memory and data files are gitignored, so strategies you find
   stay on your machine or in your own Supabase project.

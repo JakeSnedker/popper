@@ -176,7 +176,10 @@ def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "help"
 
     if cmd == "run":
-        _run(sys.argv[2:])
+        try:
+            _run(sys.argv[2:])
+        except FileNotFoundError as e:
+            sys.exit(str(e))
     elif cmd == "research":
         _research(sys.argv[2:])
     elif cmd == "seed":

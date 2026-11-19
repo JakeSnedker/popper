@@ -1,5 +1,33 @@
 # Market Data
 
+Popper ships without market data. Bring your own OHLC bars.
+
+## Use your own data
+
+Save one Parquet file per symbol and timeframe:
+
+```text
+data/<symbol lowercase>/<SYMBOL>_<TIMEFRAME>.parquet     e.g. data/us30/US30_M5.parquet
+```
+
+Required columns: `time` (UTC), `open`, `high`, `low`, `close`. Optional: `tick_volume` (needed by
+volume features) and `spread` in points (used for spread costs). Timeframes are `M1`, `M5`, `M15`, `H1`
+and so on. The example hypotheses in `examples/hypotheses/` use US30 on M1 and M5.
+
+From a CSV with those columns:
+
+```python
+import pandas as pd
+df = pd.read_csv("US30_M5.csv", parse_dates=["time"])
+df.to_parquet("data/us30/US30_M5.parquet", index=False)
+```
+
+From a MetaTrader 5 terminal on Windows: `scripts/export_mt5.py`.
+
+Never commit market data. Parquet and CSV files under `data/` are gitignored.
+
+## Canonical dataset (the author's setup)
+
 Market data is deliberately excluded from Git and Supabase. Each Popper node receives the same separately versioned dataset, verifies its aggregate hash, and uses it read-only.
 
 Canonical Popper Node v0.1 layout:

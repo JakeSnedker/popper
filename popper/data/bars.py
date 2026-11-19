@@ -38,7 +38,11 @@ def _read(symbol: str, timeframe: str) -> pd.DataFrame:
 
     path = DATA_DIR / symbol.lower() / f"{symbol}_{canonical}.parquet"
     if not path.exists():
-        raise FileNotFoundError(f"no bars at {path} or {canonical_root}")
+        raise FileNotFoundError(
+            f"No {symbol} {canonical} market data found. Popper ships without market data; "
+            f"put your own bars at {path} (columns: time, open, high, low, close). "
+            "See data/README.md for the format."
+        )
     return _validate(pd.read_parquet(path), path)
 
 
